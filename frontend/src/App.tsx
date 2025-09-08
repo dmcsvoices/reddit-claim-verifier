@@ -250,64 +250,6 @@ function App() {
         )}
       </div>
 
-      <div style={{ marginBottom: '20px' }}>
-        <h2>Queue Management</h2>
-        <button 
-          onClick={() => {
-            setShowQueueDashboard(!showQueueDashboard)
-            if (!showQueueDashboard) {
-              getQueueStatus()
-              getQueueStats()
-            }
-          }}
-          style={{ padding: '8px 16px', marginRight: '10px' }}
-        >
-          {showQueueDashboard ? 'Hide Queue Dashboard' : 'Show Queue Dashboard'}
-        </button>
-        
-        {showQueueDashboard && (
-          <div style={{ border: '1px solid #ddd', padding: '15px', borderRadius: '4px', background: '#f9f9f9', marginTop: '10px' }}>
-            {queueStatus && (
-              <div style={{ marginBottom: '15px' }}>
-                <h3>Queue Status</h3>
-                <p><strong>Running:</strong> {queueStatus.running ? 'Yes' : 'No'}</p>
-                <p><strong>Workers:</strong> {queueStatus.workers?.join(', ')}</p>
-                
-                <h4>Endpoint Status</h4>
-                {Object.entries(queueStatus.endpoint_status || {}).map(([stage, status]: [string, any]) => (
-                  <div key={stage} style={{ marginBottom: '10px', padding: '10px', background: '#fff', borderRadius: '4px' }}>
-                    <strong>{stage}:</strong> {status.available ? 'Available' : 'Unavailable'} 
-                    ({status.current_load}/{status.max_concurrent} active)
-                    <div style={{ marginLeft: '10px', marginTop: '5px' }}>
-                      <button 
-                        onClick={() => pauseQueue(stage)}
-                        style={{ marginRight: '5px', padding: '4px 8px', fontSize: '12px' }}
-                      >
-                        Pause
-                      </button>
-                      <button 
-                        onClick={() => resumeQueue(stage)}
-                        style={{ padding: '4px 8px', fontSize: '12px' }}
-                      >
-                        Resume
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-            
-            {queueStats && (
-              <div>
-                <h3>Queue Statistics</h3>
-                <pre style={{ background: '#f0f0f0', padding: '10px', borderRadius: '4px' }}>
-                  {JSON.stringify(queueStats, null, 2)}
-                </pre>
-              </div>
-            )}
-          </div>
-        )}
-      </div>
 
       <div style={{ marginBottom: '20px' }}>
         <h2>Agent Management</h2>
