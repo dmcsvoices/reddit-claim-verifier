@@ -1,0 +1,260 @@
+/* Synthwave Theme CSS */
+@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&display=swap');
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: linear-gradient(45deg, #ff006e, #8338ec);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(45deg, #8338ec, #3a86ff);
+}
+
+/* Glow animations */
+@keyframes neonGlow {
+  0%, 100% {
+    text-shadow: 
+      0 0 5px #ff006e,
+      0 0 10px #ff006e,
+      0 0 15px #ff006e;
+  }
+  50% {
+    text-shadow: 
+      0 0 8px #ff006e,
+      0 0 16px #ff006e,
+      0 0 24px #ff006e;
+  }
+}
+
+@keyframes borderPulse {
+  0%, 100% {
+    border-color: rgba(255, 0, 110, 0.5);
+    box-shadow: 0 0 10px rgba(255, 0, 110, 0.3);
+  }
+  50% {
+    border-color: rgba(131, 56, 236, 0.8);
+    box-shadow: 0 0 20px rgba(131, 56, 236, 0.5);
+  }
+}
+
+@keyframes backgroundPulse {
+  0%, 100% {
+    background: linear-gradient(135deg, #0f0f23 0%, #1a1a2e 50%, #16213e 100%);
+  }
+  50% {
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f0f23 100%);
+  }
+}
+
+/* Button hover effects */
+.synthwave-button {
+  position: relative;
+  overflow: hidden;
+  transition: all 0.3s ease;
+}
+
+.synthwave-button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 25px rgba(255, 0, 110, 0.4) !important;
+}
+
+.synthwave-button:active {
+  transform: translateY(0);
+}
+
+.synthwave-button::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2), transparent);
+  transition: left 0.5s;
+}
+
+.synthwave-button:hover::before {
+  left: 100%;
+}
+
+/* Input focus effects */
+.synthwave-input {
+  transition: all 0.3s ease;
+  position: relative;
+}
+
+.synthwave-input:focus {
+  outline: none;
+  border-color: #ff006e !important;
+  box-shadow: 0 0 15px rgba(255, 0, 110, 0.4);
+  background: rgba(255, 255, 255, 0.15) !important;
+}
+
+/* Card hover effects */
+.synthwave-card {
+  transition: all 0.3s ease;
+  position: relative;
+}
+
+.synthwave-card:hover {
+  transform: translateY(-5px);
+  box-shadow: 0 15px 40px rgba(0, 0, 0, 0.4);
+  border-color: rgba(255, 0, 110, 0.5);
+}
+
+/* Animated background grid */
+.synthwave-bg {
+  position: relative;
+  overflow: hidden;
+}
+
+.synthwave-bg::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-image: 
+    linear-gradient(rgba(255, 0, 110, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 0, 110, 0.03) 1px, transparent 1px);
+  background-size: 50px 50px;
+  animation: gridMove 20s linear infinite;
+  pointer-events: none;
+}
+
+@keyframes gridMove {
+  0% { transform: translate(0, 0); }
+  100% { transform: translate(50px, 50px); }
+}
+
+/* Status indicators */
+.status-online {
+  position: relative;
+}
+
+.status-online::before {
+  content: '';
+  position: absolute;
+  left: -15px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 8px;
+  height: 8px;
+  background: #00ff88;
+  border-radius: 50%;
+  box-shadow: 0 0 10px #00ff88;
+  animation: statusPulse 2s infinite;
+}
+
+.status-offline {
+  position: relative;
+}
+
+.status-offline::before {
+  content: '';
+  position: absolute;
+  left: -15px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 8px;
+  height: 8px;
+  background: #ff3366;
+  border-radius: 50%;
+  box-shadow: 0 0 10px #ff3366;
+  animation: statusPulse 2s infinite;
+}
+
+@keyframes statusPulse {
+  0%, 100% {
+    opacity: 1;
+    transform: translateY(-50%) scale(1);
+  }
+  50% {
+    opacity: 0.5;
+    transform: translateY(-50%) scale(1.2);
+  }
+}
+
+/* Text glow effects */
+.glow-text {
+  animation: neonGlow 2s ease-in-out infinite alternate;
+}
+
+/* Loading spinner */
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+.loading-spinner {
+  display: inline-block;
+  width: 20px;
+  height: 20px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-radius: 50%;
+  border-top-color: #ff006e;
+  animation: spin 1s ease-in-out infinite;
+}
+
+/* Progress bars */
+.synthwave-progress {
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 10px;
+  overflow: hidden;
+  height: 6px;
+}
+
+.synthwave-progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, #ff006e, #8338ec, #3a86ff);
+  background-size: 200% 100%;
+  animation: progressPulse 2s ease-in-out infinite;
+}
+
+@keyframes progressPulse {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+/* Tooltip styles */
+.synthwave-tooltip {
+  position: relative;
+  cursor: help;
+}
+
+.synthwave-tooltip::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.9);
+  color: #ffffff;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  white-space: nowrap;
+  opacity: 0;
+  visibility: hidden;
+  transition: all 0.3s ease;
+  border: 1px solid #ff006e;
+  box-shadow: 0 4px 15px rgba(255, 0, 110, 0.3);
+}
+
+.synthwave-tooltip:hover::after {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(-50%) translateY(-5px);
+}

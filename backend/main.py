@@ -711,6 +711,58 @@ def restart_backend():
         "note": "Docker restart is handled externally"
     }
 
+# LLM Endpoint Proxy (to bypass CORS)
+class TestEndpointRequest(BaseModel):
+    endpoint_url: str
+
+@app.post("/test-llm-endpoint")
+async def test_llm_endpoint(request: TestEndpointRequest):
+    """Proxy endpoint to test LLM endpoints and fetch available models (bypasses CORS)"""
+    try:
+        import requests
+        import re
+        
+        # Ensure the URL has the correct format
+        endpoint_url = request.endpoint_url.rstrip('/')
+        
+        # Native mode: Use endpoints as-is (no Docker translation needed)
+        print(f"🔍 Native mode - using endpoint as-is: {endpoint_url}")
+        
+        models_url = f"{endpoint_url}/v1/models"
+        
+        print(f"🔍 Testing LLM endpoint: {models_url}")
+        
+        # Make request to the LLM endpoint
+        response = requests.get(models_url, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            
+            if 'data' in data and isinstance(data['data'], list):
+                models = [model.get('id', 'unknown') for model in data['data']]
+                print(f"✅ Found {len(models)} models: {models}")
+                
+                return {
+                    "success": True,
+                    "models": models,
+                    "endpoint": endpoint_url,
+                    "model_count": len(models)
+                }
+            else:
+                raise Exception("Invalid response format - missing 'data' array")
+                
+        else:
+            raise Exception(f"HTTP {response.status_code}: {response.text}")
+            
+    except requests.exceptions.ConnectTimeout:
+        raise HTTPException(status_code=408, detail="Connection timeout - endpoint may be unreachable")
+    except requests.exceptions.ConnectionError as e:
+        raise HTTPException(status_code=503, detail=f"Connection failed: {str(e)}")
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=500, detail=f"Request failed: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Endpoint test failed: {str(e)}")
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=5151)

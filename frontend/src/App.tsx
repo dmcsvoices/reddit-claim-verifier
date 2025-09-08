@@ -1,8 +1,12 @@
 import { useState, useEffect } from 'react'
+import './synthwave.css'
 
 const API_BASE = 'http://localhost:5151'
 
+type TabType = 'monitoring' | 'queues' | 'agents'
+
 function App() {
+  const [activeTab, setActiveTab] = useState<TabType>('monitoring')
   const [health, setHealth] = useState<any>(null)
   const [posts, setPosts] = useState<any[]>([])
   const [subreddit, setSubreddit] = useState('')
@@ -25,20 +29,55 @@ function App() {
   // Queue Management state
   const [queueStatus, setQueueStatus] = useState<any>(null)
   const [queueStats, setQueueStats] = useState<any>(null)
-  const [showQueueDashboard, setShowQueueDashboard] = useState(false)
+  
+  // Agent Backend state  
+  const [availableModels, setAvailableModels] = useState<{[key: string]: string[]}>({}) 
   
   // Agent Management state
   const [agentPrompts, setAgentPrompts] = useState<any[]>([])
   const [agentConfig, setAgentConfig] = useState<any>(null)
-  const [showAgentManager, setShowAgentManager] = useState(false)
   const [editingPrompt, setEditingPrompt] = useState<any>(null)
+  const [testingEndpoint, setTestingEndpoint] = useState<string | null>(null)
+  const [currentEndpoints, setCurrentEndpoints] = useState<{[key: string]: string}>({}) // Track current endpoint values per stage
+  const [currentModels, setCurrentModels] = useState<{[key: string]: string}>({}) // Track current model selections per stage
+
+  // LocalStorage persistence helpers
+  const saveAgentSettings = () => {
+    const settings = {
+      endpoints: currentEndpoints,
+      models: currentModels,
+      savedAt: new Date().toISOString()
+    }
+    localStorage.setItem('reddit-monitor-agent-settings', JSON.stringify(settings))
+    console.log('💾 Saved agent settings to localStorage:', settings)
+  }
+
+  const loadAgentSettings = () => {
+    try {
+      const saved = localStorage.getItem('reddit-monitor-agent-settings')
+      if (saved) {
+        const settings = JSON.parse(saved)
+        console.log('🔄 Loaded agent settings from localStorage:', settings)
+        if (settings.endpoints) {
+          setCurrentEndpoints(settings.endpoints)
+        }
+        if (settings.models) {
+          setCurrentModels(settings.models)
+        }
+        return settings
+      }
+    } catch (error) {
+      console.error('Failed to load agent settings from localStorage:', error)
+    }
+    return null
+  }
 
   const checkHealth = async () => {
     try {
       const response = await fetch(`${API_BASE}/health`)
       const data = await response.json()
       setHealth(data)
-    } catch (error) {
+    } catch (error: any) {
       setHealth({ status: 'error', error: error.message })
     }
   }
@@ -90,8 +129,8 @@ function App() {
       }
       
       setScanResult(data)
-      getPosts() // Refresh posts after scan
-    } catch (error) {
+      getPosts()
+    } catch (error: any) {
       setScanResult({ error: error.message })
     } finally {
       setScanning(false)
@@ -125,20 +164,18 @@ function App() {
       
       setCredentialsResult(data)
       
-      // Show success message and remind user to wait
       if (data.restart_required) {
         setCredentialsResult({ 
           ...data, 
           message: data.message + ' Please wait a moment for the backend to reload the new credentials...'
         })
         
-        // Check health status after a delay to see if credentials are working
         setTimeout(() => {
           checkHealth()
         }, 3000)
       }
       
-    } catch (error) {
+    } catch (error: any) {
       setCredentialsResult({ error: error.message })
     } finally {
       setCredentialsUpdating(false)
@@ -170,9 +207,7 @@ function App() {
     try {
       const response = await fetch(`${API_BASE}/queue/pause/${stage}`, { method: 'POST' })
       if (response.ok) {
-        const result = await response.json()
-        console.log(`Queue ${stage} paused:`, result)
-        getQueueStatus() // Refresh status only
+        getQueueStatus()
       }
     } catch (error) {
       console.error(`Failed to pause ${stage}:`, error)
@@ -183,9 +218,7 @@ function App() {
     try {
       const response = await fetch(`${API_BASE}/queue/resume/${stage}`, { method: 'POST' })
       if (response.ok) {
-        const result = await response.json()
-        console.log(`Queue ${stage} resumed:`, result)
-        getQueueStatus() // Refresh status only
+        getQueueStatus()
       }
     } catch (error) {
       console.error(`Failed to resume ${stage}:`, error)
@@ -208,6 +241,36 @@ function App() {
       const response = await fetch(`${API_BASE}/agents/config`)
       const data = await response.json()
       setAgentConfig(data)
+      
+      // Initialize currentEndpoints with the config endpoints, but prioritize saved settings
+      if (data.config) {
+        const initialEndpoints: {[key: string]: string} = {}
+        const initialModels: {[key: string]: string} = {}
+        
+        // Get saved settings
+        const savedSettings = loadAgentSettings()
+        
+        Object.entries(data.config).forEach(([stage, config]: [string, any]) => {
+          // Use saved endpoint if available, otherwise use config default
+          const endpoint = savedSettings?.endpoints?.[stage] || config.endpoint
+          const model = savedSettings?.models?.[stage] || config.model
+          
+          if (endpoint) {
+            initialEndpoints[stage] = endpoint
+            initialModels[stage] = model
+            // Silently fetch models for each endpoint (no stage parameter = no loading indicator)
+            testEndpointAndFetchModels(endpoint)
+          }
+        })
+        
+        // Only update if we're not already using saved settings
+        if (!savedSettings?.endpoints || Object.keys(currentEndpoints).length === 0) {
+          setCurrentEndpoints(initialEndpoints)
+        }
+        if (!savedSettings?.models || Object.keys(currentModels).length === 0) {
+          setCurrentModels(initialModels)
+        }
+      }
     } catch (error) {
       console.error('Failed to get agent config:', error)
     }
@@ -225,7 +288,7 @@ function App() {
       })
       
       if (response.ok) {
-        getAgentPrompts() // Refresh prompts
+        getAgentPrompts()
         setEditingPrompt(null)
       }
     } catch (error) {
@@ -233,300 +296,806 @@ function App() {
     }
   }
 
+  // Agent Backend Functions (using backend proxy to avoid CORS)
+  const testEndpointAndFetchModels = async (url: string, stage?: string) => {
+    if (stage) setTestingEndpoint(stage)
+    
+    try {
+      console.log(`Testing endpoint via backend proxy: ${url}`)
+      
+      // Normalize the URL by removing /v1 suffix for consistent caching
+      const normalizedUrl = url.replace(/\/v1\/?$/, '')
+      
+      // Use our backend proxy to test the endpoint (bypasses CORS)
+      const response = await fetch(`${API_BASE}/test-llm-endpoint`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          endpoint_url: normalizedUrl
+        })
+      })
+      
+      const data = await response.json()
+      
+      if (!response.ok) {
+        throw new Error(data.detail || `HTTP ${response.status}: ${response.statusText}`)
+      }
+      
+      console.log('Backend proxy response:', data)
+      
+      if (data.success && data.models) {
+        const models = data.models
+        // Use BOTH the original URL and normalized URL as cache keys to ensure dropdown finds models
+        setAvailableModels(prev => ({ 
+          ...prev, 
+          [url]: models,           // Original URL as entered by user
+          [normalizedUrl]: models  // Normalized URL for consistency
+        }))
+        console.log(`Cached models for keys: "${url}" and "${normalizedUrl}"`)
+        console.log(`Found ${models.length} models:`, models)
+        return { success: true, models, endpoint: data.endpoint }
+      } else {
+        throw new Error(data.error || 'Unknown error from backend proxy')
+      }
+    } catch (error: any) {
+      console.error(`Error testing endpoint ${url}:`, error)
+      return { success: false, error: error.message }
+    } finally {
+      if (stage) setTestingEndpoint(null)
+    }
+  }
+
+  // Synthwave Theme Styles
+  const synthwaveStyles = {
+    app: {
+      minHeight: '100vh',
+      background: 'linear-gradient(135deg, #0f0f23 0%, #1a1a2e 50%, #16213e 100%)',
+      color: '#ffffff',
+      fontFamily: "'Orbitron', 'Courier New', monospace",
+      fontSize: '14px'
+    },
+    header: {
+      background: 'linear-gradient(90deg, #ff006e 0%, #8338ec 50%, #3a86ff 100%)',
+      padding: '20px',
+      borderBottom: '3px solid #ff006e',
+      boxShadow: '0 0 20px rgba(255, 0, 110, 0.5)'
+    },
+    headerTitle: {
+      margin: 0,
+      fontSize: '2.5em',
+      textShadow: '0 0 10px #ff006e',
+      textAlign: 'center' as const,
+      fontWeight: 900
+    },
+    nav: {
+      background: 'rgba(255, 255, 255, 0.05)',
+      padding: '15px',
+      display: 'flex',
+      justifyContent: 'center',
+      gap: '20px',
+      borderBottom: '1px solid rgba(255, 0, 110, 0.3)'
+    },
+    navButton: (active: boolean) => ({
+      background: active ? 'linear-gradient(45deg, #ff006e, #8338ec)' : 'transparent',
+      color: '#ffffff',
+      border: active ? 'none' : '2px solid #ff006e',
+      padding: '12px 24px',
+      borderRadius: '25px',
+      cursor: 'pointer',
+      fontSize: '16px',
+      fontWeight: 'bold',
+      textTransform: 'uppercase' as const,
+      transition: 'all 0.3s ease',
+      boxShadow: active ? '0 0 15px rgba(255, 0, 110, 0.5)' : 'none'
+    }),
+    container: {
+      padding: '30px',
+      maxWidth: '1400px',
+      margin: '0 auto'
+    },
+    card: {
+      background: 'rgba(255, 255, 255, 0.05)',
+      border: '1px solid rgba(131, 56, 236, 0.3)',
+      borderRadius: '15px',
+      padding: '25px',
+      marginBottom: '25px',
+      boxShadow: '0 8px 32px rgba(0, 0, 0, 0.3)',
+      backdropFilter: 'blur(10px)'
+    },
+    cardTitle: {
+      color: '#ff006e',
+      fontSize: '1.5em',
+      marginBottom: '20px',
+      textShadow: '0 0 5px #ff006e',
+      fontWeight: 700
+    },
+    button: {
+      background: 'linear-gradient(45deg, #ff006e, #8338ec)',
+      color: '#ffffff',
+      border: 'none',
+      padding: '10px 20px',
+      borderRadius: '20px',
+      cursor: 'pointer',
+      fontSize: '14px',
+      fontWeight: 'bold',
+      transition: 'all 0.3s ease',
+      boxShadow: '0 4px 15px rgba(255, 0, 110, 0.3)'
+    },
+    input: {
+      background: 'rgba(255, 255, 255, 0.1)',
+      border: '1px solid rgba(131, 56, 236, 0.5)',
+      borderRadius: '10px',
+      padding: '12px',
+      color: '#ffffff',
+      fontSize: '14px',
+      width: '100%',
+      marginBottom: '10px'
+    },
+    grid: {
+      display: 'grid',
+      gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))',
+      gap: '20px'
+    }
+  }
+
   useEffect(() => {
+    // Load saved settings first, then fetch data
+    loadAgentSettings()
     checkHealth()
     getPosts()
+    getAgentPrompts()
+    getAgentConfig()
   }, [])
 
+  // Auto-save when settings change
+  useEffect(() => {
+    if (Object.keys(currentEndpoints).length > 0 || Object.keys(currentModels).length > 0) {
+      saveAgentSettings()
+    }
+  }, [currentEndpoints, currentModels])
+
   return (
-    <div style={{ padding: '20px', fontFamily: 'Arial, sans-serif' }}>
-      <h1>Reddit Claim Verifier</h1>
+    <div style={synthwaveStyles.app} className="synthwave-bg">
+      <header style={synthwaveStyles.header}>
+        <h1 style={synthwaveStyles.headerTitle} className="glow-text">REDDIT CLAIM VERIFIER</h1>
+        <div style={{ textAlign: 'center', marginTop: '10px', opacity: 0.8 }}>
+          Advanced AI-Powered Content Analysis System
+        </div>
+      </header>
       
-      <div style={{ marginBottom: '20px' }}>
-        <h2>Health Check</h2>
-        <button onClick={checkHealth}>Check Health</button>
-        {health && (
-          <pre style={{ background: '#f0f0f0', padding: '10px', marginTop: '10px' }}>
-            {JSON.stringify(health, null, 2)}
-          </pre>
-        )}
-      </div>
-
-
-
-      <div style={{ marginBottom: '20px' }}>
-        <h2>Reddit Scanner</h2>
-        <div style={{ marginBottom: '10px' }}>
-          <input
-            type="text"
-            placeholder="Enter subreddit name (e.g., Python)"
-            value={subreddit}
-            onChange={(e) => setSubreddit(e.target.value)}
-            style={{ padding: '8px', marginRight: '10px', width: '200px' }}
-          />
-          <input
-            type="number"
-            placeholder="Hours"
-            value={hours}
-            onChange={(e) => setHours(Number(e.target.value))}
-            min="1"
-            max="24"
-            style={{ padding: '8px', marginRight: '10px', width: '80px' }}
-          />
-          <button 
-            onClick={scanSubreddit} 
-            disabled={scanning}
-            style={{ padding: '8px 16px' }}
-          >
-            {scanning ? 'Scanning...' : 'Scan'}
+      <nav style={synthwaveStyles.nav}>
+        <button 
+          style={synthwaveStyles.navButton(activeTab === 'monitoring')}
+          onClick={() => setActiveTab('monitoring')}
+          className="synthwave-button"
+        >
+          📡 Monitoring
+        </button>
+        <button 
+          style={synthwaveStyles.navButton(activeTab === 'queues')}
+          onClick={() => {
+            setActiveTab('queues')
+            getQueueStatus()
+            getQueueStats()
+          }}
+          className="synthwave-button"
+        >
+          🔄 Queue Control
+        </button>
+        <button 
+          style={synthwaveStyles.navButton(activeTab === 'agents')}
+          onClick={() => {
+            setActiveTab('agents')
+            getAgentPrompts()
+            getAgentConfig()
+          }}
+          className="synthwave-button"
+        >
+          🧠 Agent Config
+        </button>
+      </nav>
+      
+      <div style={synthwaveStyles.container}>
+        {/* Health Status Bar */}
+        <div style={{
+          ...synthwaveStyles.card,
+          marginBottom: '15px',
+          padding: '15px',
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center'
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
+            <span style={{ color: health?.status === 'healthy' ? '#00ff88' : '#ff3366' }}>
+              {health?.status === 'healthy' ? '🟢 SYSTEM ONLINE' : '🔴 SYSTEM OFFLINE'}
+            </span>
+            {health?.total_posts && (
+              <span style={{ color: '#8338ec' }}>
+                📊 {health.total_posts} POSTS IN DATABASE
+              </span>
+            )}
+          </div>
+          <button style={synthwaveStyles.button} onClick={checkHealth} className="synthwave-button">
+            REFRESH STATUS
           </button>
         </div>
         
-        {scanResult && (
-          <div style={{ background: scanResult.error ? '#ffebee' : '#e8f5e8', padding: '10px', marginTop: '10px', borderRadius: '4px' }}>
-            {scanResult.error ? (
-              <p style={{ color: 'red' }}><strong>Error:</strong> {scanResult.error}</p>
-            ) : (
-              <div>
-                <p><strong>Subreddit:</strong> r/{scanResult.subreddit}</p>
-                <p><strong>Time Window:</strong> {scanResult.hours} hours</p>
-                <p><strong>Posts Found:</strong> {scanResult.found}</p>
-                <p><strong>New Posts Saved:</strong> {scanResult.saved}</p>
-                {scanResult.sample && scanResult.sample.length > 0 && (
-                  <div>
-                    <p><strong>Sample Posts:</strong></p>
-                    {scanResult.sample.map((post, index) => (
-                      <div key={index} style={{ border: '1px solid #ddd', padding: '8px', margin: '4px 0', background: 'white' }}>
-                        <p><strong>{post.title}</strong></p>
-                        <p>by u/{post.author} • {new Date(post.created_utc).toLocaleString()}</p>
-                      </div>
-                    ))}
+        {/* Tab Content */}
+        {activeTab === 'monitoring' && (
+          <div>
+            {/* Reddit Scanner Card */}
+            <div style={synthwaveStyles.card} className="synthwave-card">
+              <h2 style={synthwaveStyles.cardTitle}>📡 POST INGRESS MONITORING</h2>
+              
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '30px', marginBottom: '25px' }}>
+                <div>
+                  <h3 style={{ color: '#3a86ff', marginBottom: '15px' }}>Subreddit Scanner</h3>
+                  <div style={{ marginBottom: '15px' }}>
+                    <label style={{ display: 'block', marginBottom: '5px', color: '#ff006e' }}>Target Subreddit:</label>
+                    <input
+                      type="text"
+                      placeholder="Enter subreddit name (e.g., Python)"
+                      value={subreddit}
+                      onChange={(e) => setSubreddit(e.target.value)}
+                      style={synthwaveStyles.input}
+                      className="synthwave-input"
+                    />
                   </div>
-                )}
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-
-      <div style={{ marginBottom: '20px' }}>
-        <h2>Reddit Credentials</h2>
-        <button 
-          onClick={() => setShowCredentials(!showCredentials)}
-          style={{ padding: '8px 16px', marginBottom: '10px' }}
-        >
-          {showCredentials ? 'Hide Credentials' : 'Update Credentials'}
-        </button>
-        
-        {showCredentials && (
-          <div style={{ border: '1px solid #ddd', padding: '15px', borderRadius: '4px', background: '#f9f9f9' }}>
-            <div style={{ marginBottom: '10px' }}>
-              <label style={{ display: 'block', marginBottom: '5px' }}>Reddit Client ID:</label>
-              <input
-                type="text"
-                value={credentials.reddit_client_id}
-                onChange={(e) => setCredentials({ ...credentials, reddit_client_id: e.target.value })}
-                placeholder="Your Reddit app client ID"
-                style={{ width: '100%', padding: '8px', marginBottom: '10px' }}
-              />
-            </div>
-            
-            <div style={{ marginBottom: '10px' }}>
-              <label style={{ display: 'block', marginBottom: '5px' }}>Reddit Client Secret:</label>
-              <input
-                type="password"
-                value={credentials.reddit_client_secret}
-                onChange={(e) => setCredentials({ ...credentials, reddit_client_secret: e.target.value })}
-                placeholder="Your Reddit app client secret"
-                style={{ width: '100%', padding: '8px', marginBottom: '10px' }}
-              />
-            </div>
-            
-            <div style={{ marginBottom: '10px' }}>
-              <label style={{ display: 'block', marginBottom: '5px' }}>Reddit Username:</label>
-              <input
-                type="text"
-                value={credentials.reddit_username}
-                onChange={(e) => setCredentials({ ...credentials, reddit_username: e.target.value })}
-                placeholder="Your Reddit username"
-                style={{ width: '100%', padding: '8px', marginBottom: '10px' }}
-              />
-            </div>
-            
-            <div style={{ marginBottom: '10px' }}>
-              <label style={{ display: 'block', marginBottom: '5px' }}>Reddit Password:</label>
-              <input
-                type="password"
-                value={credentials.reddit_password}
-                onChange={(e) => setCredentials({ ...credentials, reddit_password: e.target.value })}
-                placeholder="Your Reddit password (or app password if 2FA enabled)"
-                style={{ width: '100%', padding: '8px', marginBottom: '10px' }}
-              />
-            </div>
-            
-            <div style={{ marginBottom: '15px' }}>
-              <label style={{ display: 'block', marginBottom: '5px' }}>User Agent:</label>
-              <input
-                type="text"
-                value={credentials.reddit_user_agent}
-                onChange={(e) => setCredentials({ ...credentials, reddit_user_agent: e.target.value })}
-                style={{ width: '100%', padding: '8px', marginBottom: '10px' }}
-              />
-            </div>
-            
-            <button 
-              onClick={updateCredentials} 
-              disabled={credentialsUpdating}
-              style={{ 
-                padding: '10px 20px', 
-                background: '#007bff', 
-                color: 'white', 
-                border: 'none', 
-                borderRadius: '4px',
-                cursor: credentialsUpdating ? 'not-allowed' : 'pointer',
-                opacity: credentialsUpdating ? 0.6 : 1
-              }}
-            >
-              {credentialsUpdating ? 'Updating...' : 'Update & Restart Backend'}
-            </button>
-            
-            {credentialsResult && (
-              <div style={{ 
-                background: credentialsResult.error ? '#ffebee' : '#e8f5e8', 
-                padding: '10px', 
-                marginTop: '10px', 
-                borderRadius: '4px' 
-              }}>
-                {credentialsResult.error ? (
-                  <p style={{ color: 'red', margin: 0 }}>
-                    <strong>Error:</strong> {credentialsResult.error}
-                  </p>
-                ) : (
-                  <p style={{ color: 'green', margin: 0 }}>
-                    <strong>Success:</strong> {credentialsResult.message}
-                  </p>
-                )}
-              </div>
-            )}
-            
-            <div style={{ marginTop: '15px', fontSize: '0.9em', color: '#666' }}>
-              <p><strong>Note:</strong> You can get Reddit API credentials from <a href="https://www.reddit.com/prefs/apps" target="_blank">reddit.com/prefs/apps</a></p>
-              <p>Create a "script" type application and use the Client ID and Client Secret.</p>
-            </div>
-          </div>
-        )}
-      </div>
-
-      <div style={{ marginBottom: '20px' }}>
-        <h2>Queue Management Dashboard</h2>
-        <button 
-          onClick={() => {
-            setShowQueueDashboard(!showQueueDashboard)
-            if (!showQueueDashboard) {
-              getQueueStatus()
-              getQueueStats()
-            }
-          }}
-          style={{ padding: '8px 16px', marginBottom: '10px' }}
-        >
-          {showQueueDashboard ? 'Hide Queue Dashboard' : 'Show Queue Dashboard'}
-        </button>
-        
-        {showQueueDashboard && (
-          <div style={{ border: '1px solid #ddd', padding: '15px', borderRadius: '4px', background: '#f9f9f9' }}>
-            
-            {/* Queue Status */}
-            {queueStatus && (
-              <div style={{ marginBottom: '20px' }}>
-                <h3>Queue Status</h3>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '10px' }}>
-                  {Object.entries(queueStatus.endpoint_status || {}).map(([stage, status]: [string, any]) => (
-                    <div key={stage} style={{ 
-                      border: '1px solid #ccc', 
-                      padding: '10px', 
-                      borderRadius: '4px',
-                      background: status.available ? '#e8f5e8' : '#ffebee'
+                  
+                  <div style={{ marginBottom: '20px' }}>
+                    <label style={{ display: 'block', marginBottom: '5px', color: '#ff006e' }}>Time Window (hours):</label>
+                    <input
+                      type="number"
+                      value={hours}
+                      onChange={(e) => setHours(Number(e.target.value))}
+                      min="1"
+                      max="24"
+                      style={{ ...synthwaveStyles.input, width: '120px' }}
+                      className="synthwave-input"
+                    />
+                  </div>
+                  
+                  <button 
+                    onClick={scanSubreddit} 
+                    disabled={scanning}
+                    style={{
+                      ...synthwaveStyles.button,
+                      background: scanning ? 'rgba(255, 255, 255, 0.1)' : 'linear-gradient(45deg, #00ff88, #3a86ff)',
+                      cursor: scanning ? 'not-allowed' : 'pointer',
+                      opacity: scanning ? 0.6 : 1
+                    }}
+                    className={scanning ? '' : 'synthwave-button'}
+                  >
+                    {scanning ? (
+                      <>
+                        <span className="loading-spinner" style={{marginRight: '8px'}}></span>
+                        SCANNING...
+                      </>
+                    ) : (
+                      '🚀 INITIATE SCAN'
+                    )}
+                  </button>
+                </div>
+                
+                <div>
+                  <h3 style={{ color: '#3a86ff', marginBottom: '15px' }}>Reddit API Configuration</h3>
+                  <button 
+                    onClick={() => setShowCredentials(!showCredentials)}
+                    style={{
+                      ...synthwaveStyles.button,
+                      background: 'linear-gradient(45deg, #8338ec, #ff006e)',
+                      marginBottom: '15px'
+                    }}
+                    className="synthwave-button"
+                  >
+                    {showCredentials ? '🔒 HIDE CREDENTIALS' : '🔑 CONFIGURE API'}
+                  </button>
+                  
+                  {showCredentials && (
+                    <div style={{
+                      background: 'rgba(0, 0, 0, 0.3)',
+                      padding: '20px',
+                      borderRadius: '10px',
+                      border: '1px solid rgba(255, 0, 110, 0.3)'
                     }}>
-                      <h4>{stage.charAt(0).toUpperCase() + stage.slice(1)}</h4>
-                      <p>Status: {status.available ? '🟢 Online' : '🔴 Offline'}</p>
-                      <p>Load: {status.current_load}/{status.max_concurrent}</p>
-                      <div style={{ marginTop: '10px' }}>
+                      <div style={{ marginBottom: '15px' }}>
+                        <label style={{ display: 'block', marginBottom: '5px', color: '#ff006e' }}>Client ID:</label>
+                        <input
+                          type="text"
+                          value={credentials.reddit_client_id}
+                          onChange={(e) => setCredentials({ ...credentials, reddit_client_id: e.target.value })}
+                          placeholder="Reddit app client ID"
+                          style={synthwaveStyles.input}
+                          className="synthwave-input"
+                        />
+                      </div>
+                      
+                      <div style={{ marginBottom: '15px' }}>
+                        <label style={{ display: 'block', marginBottom: '5px', color: '#ff006e' }}>Client Secret:</label>
+                        <input
+                          type="password"
+                          value={credentials.reddit_client_secret}
+                          onChange={(e) => setCredentials({ ...credentials, reddit_client_secret: e.target.value })}
+                          placeholder="Reddit app client secret"
+                          style={synthwaveStyles.input}
+                          className="synthwave-input"
+                        />
+                      </div>
+                      
+                      <div style={{ marginBottom: '15px' }}>
+                        <label style={{ display: 'block', marginBottom: '5px', color: '#ff006e' }}>Username:</label>
+                        <input
+                          type="text"
+                          value={credentials.reddit_username}
+                          onChange={(e) => setCredentials({ ...credentials, reddit_username: e.target.value })}
+                          placeholder="Your Reddit username"
+                          style={synthwaveStyles.input}
+                          className="synthwave-input"
+                        />
+                      </div>
+                      
+                      <div style={{ marginBottom: '15px' }}>
+                        <label style={{ display: 'block', marginBottom: '5px', color: '#ff006e' }}>Password:</label>
+                        <input
+                          type="password"
+                          value={credentials.reddit_password}
+                          onChange={(e) => setCredentials({ ...credentials, reddit_password: e.target.value })}
+                          placeholder="Reddit password or app password"
+                          style={synthwaveStyles.input}
+                          className="synthwave-input"
+                        />
+                      </div>
+                      
+                      <div style={{ marginBottom: '20px' }}>
+                        <label style={{ display: 'block', marginBottom: '5px', color: '#ff006e' }}>User Agent:</label>
+                        <input
+                          type="text"
+                          value={credentials.reddit_user_agent}
+                          onChange={(e) => setCredentials({ ...credentials, reddit_user_agent: e.target.value })}
+                          style={synthwaveStyles.input}
+                          className="synthwave-input"
+                        />
+                      </div>
+                      
+                      <button 
+                        onClick={updateCredentials} 
+                        disabled={credentialsUpdating}
+                        style={{
+                          ...synthwaveStyles.button,
+                          background: credentialsUpdating ? 'rgba(255, 255, 255, 0.1)' : 'linear-gradient(45deg, #00ff88, #8338ec)'
+                        }}
+                        className={credentialsUpdating ? '' : 'synthwave-button'}
+                      >
+                        {credentialsUpdating ? (
+                          <>
+                            <span className="loading-spinner" style={{marginRight: '8px'}}></span>
+                            UPDATING...
+                          </>
+                        ) : (
+                          '💾 SAVE & RESTART'
+                        )}
+                      </button>
+                      
+                      {credentialsResult && (
+                        <div style={{
+                          marginTop: '15px',
+                          padding: '10px',
+                          borderRadius: '8px',
+                          background: credentialsResult.error ? 'rgba(255, 51, 102, 0.2)' : 'rgba(0, 255, 136, 0.2)',
+                          border: `1px solid ${credentialsResult.error ? '#ff3366' : '#00ff88'}`
+                        }}>
+                          <span style={{ color: credentialsResult.error ? '#ff3366' : '#00ff88' }}>
+                            {credentialsResult.error ? '❌ ' + credentialsResult.error : '✅ ' + credentialsResult.message}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+              
+              {/* Scan Results */}
+              {scanResult && (
+                <div style={{
+                  marginTop: '25px',
+                  padding: '20px',
+                  borderRadius: '10px',
+                  background: scanResult.error ? 'rgba(255, 51, 102, 0.1)' : 'rgba(0, 255, 136, 0.1)',
+                  border: `2px solid ${scanResult.error ? '#ff3366' : '#00ff88'}`
+                }}>
+                  {scanResult.error ? (
+                    <div>
+                      <h3 style={{ color: '#ff3366' }}>❌ SCAN FAILED</h3>
+                      <p style={{ color: '#ff3366' }}>{scanResult.error}</p>
+                    </div>
+                  ) : (
+                    <div>
+                      <h3 style={{ color: '#00ff88' }}>✅ SCAN COMPLETED</h3>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '20px', marginBottom: '20px' }}>
+                        <div style={{ textAlign: 'center' }}>
+                          <div style={{ fontSize: '2em', color: '#3a86ff' }}>{scanResult.found}</div>
+                          <div>Posts Found</div>
+                        </div>
+                        <div style={{ textAlign: 'center' }}>
+                          <div style={{ fontSize: '2em', color: '#8338ec' }}>{scanResult.saved}</div>
+                          <div>New Posts Saved</div>
+                        </div>
+                        <div style={{ textAlign: 'center' }}>
+                          <div style={{ fontSize: '2em', color: '#ff006e' }}>r/{scanResult.subreddit}</div>
+                          <div>Target Subreddit</div>
+                        </div>
+                        <div style={{ textAlign: 'center' }}>
+                          <div style={{ fontSize: '2em', color: '#00ff88' }}>{scanResult.hours}h</div>
+                          <div>Time Window</div>
+                        </div>
+                      </div>
+                      
+                      {scanResult.sample && scanResult.sample.length > 0 && (
+                        <div>
+                          <h4 style={{ color: '#8338ec', marginBottom: '15px' }}>Sample Posts Discovered:</h4>
+                          {scanResult.sample.map((post: any, index: number) => (
+                            <div key={index} style={{
+                              background: 'rgba(131, 56, 236, 0.1)',
+                              border: '1px solid rgba(131, 56, 236, 0.3)',
+                              borderRadius: '8px',
+                              padding: '15px',
+                              marginBottom: '10px'
+                            }}>
+                              <h5 style={{ color: '#ffffff', margin: '0 0 5px 0' }}>{post.title}</h5>
+                              <p style={{ color: '#8338ec', margin: '5px 0', fontSize: '0.9em' }}>
+                                by u/{post.author} • {new Date(post.created_utc).toLocaleString()}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+            
+            {/* Recent Posts Card */}
+            <div style={synthwaveStyles.card} className="synthwave-card">
+              <h2 style={synthwaveStyles.cardTitle}>📋 RECENT POSTS DATABASE</h2>
+              <div style={{ display: 'flex', gap: '15px', marginBottom: '20px' }}>
+                <button onClick={getPosts} style={synthwaveStyles.button} className="synthwave-button">
+                  🔄 REFRESH POSTS
+                </button>
+                <button onClick={insertDummy} style={synthwaveStyles.button} className="synthwave-button">
+                  ➕ INSERT TEST POST
+                </button>
+              </div>
+              
+              <div style={{ maxHeight: '400px', overflowY: 'auto' }}>
+                {posts.length === 0 ? (
+                  <div style={{ textAlign: 'center', padding: '40px', color: '#8338ec' }}>
+                    <div style={{ fontSize: '3em', marginBottom: '10px' }}>📭</div>
+                    <div>No posts found in database</div>
+                  </div>
+                ) : (
+                  posts.map((post, index) => (
+                    <div key={index} style={{
+                      background: 'rgba(58, 134, 255, 0.1)',
+                      border: '1px solid rgba(58, 134, 255, 0.3)',
+                      borderRadius: '10px',
+                      padding: '20px',
+                      marginBottom: '15px'
+                    }}>
+                      <h4 style={{ color: '#ffffff', margin: '0 0 10px 0' }}>{post[2]}</h4>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '15px', fontSize: '0.9em' }}>
+                        <div>
+                          <span style={{ color: '#ff006e' }}>Author:</span>
+                          <span style={{ color: '#ffffff', marginLeft: '5px' }}>u/{post[3]}</span>
+                        </div>
+                        <div>
+                          <span style={{ color: '#ff006e' }}>Queue Stage:</span>
+                          <span style={{ color: '#00ff88', marginLeft: '5px' }}>{post[8] || 'N/A'}</span>
+                        </div>
+                        <div>
+                          <span style={{ color: '#ff006e' }}>Status:</span>
+                          <span style={{ color: '#8338ec', marginLeft: '5px' }}>{post[9] || 'N/A'}</span>
+                        </div>
+                      </div>
+                      {post[5] && (
+                        <div style={{ marginTop: '10px' }}>
+                          <a href={post[5]} target="_blank" rel="noopener noreferrer" style={{
+                            color: '#3a86ff',
+                            textDecoration: 'none',
+                            fontSize: '0.9em'
+                          }}>
+                            🔗 View Original Post
+                          </a>
+                        </div>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'queues' && (
+          <div>
+            {/* Queue Control Dashboard */}
+            <div style={synthwaveStyles.card} className="synthwave-card">
+              <h2 style={synthwaveStyles.cardTitle}>🔄 QUEUE PROCESSING CONTROL</h2>
+              
+              {queueStatus && (
+                <div style={synthwaveStyles.grid}>
+                  {Object.entries(queueStatus.endpoint_status || {}).map(([stage, status]: [string, any]) => (
+                    <div key={stage} style={{
+                      background: status.available ? 'rgba(0, 255, 136, 0.1)' : 'rgba(255, 51, 102, 0.1)',
+                      border: `2px solid ${status.available ? '#00ff88' : '#ff3366'}`,
+                      borderRadius: '15px',
+                      padding: '20px'
+                    }}>
+                      <h3 style={{ 
+                        color: status.available ? '#00ff88' : '#ff3366',
+                        marginBottom: '15px',
+                        textTransform: 'uppercase'
+                      }}>
+                        {status.available ? '🟢' : '🔴'} {stage} STAGE
+                      </h3>
+                      
+                      <div style={{ marginBottom: '15px' }}>
+                        <div style={{ color: '#8338ec', marginBottom: '5px' }}>Load Status:</div>
+                        <div style={{ color: '#ffffff' }}>{status.current_load}/{status.max_concurrent}</div>
+                      </div>
+                      
+                      <div style={{ display: 'flex', gap: '10px' }}>
                         <button 
                           onClick={() => pauseQueue(stage)}
-                          style={{ marginRight: '5px', padding: '5px 10px', background: '#ff6b6b', color: 'white', border: 'none', borderRadius: '3px' }}
+                          style={{
+                            ...synthwaveStyles.button,
+                            background: 'linear-gradient(45deg, #ff3366, #ff006e)',
+                            flex: 1
+                          }}
+                          className="synthwave-button"
                         >
-                          Pause
+                          ⏸️ PAUSE
                         </button>
                         <button 
                           onClick={() => resumeQueue(stage)}
-                          style={{ padding: '5px 10px', background: '#51cf66', color: 'white', border: 'none', borderRadius: '3px' }}
+                          style={{
+                            ...synthwaveStyles.button,
+                            background: 'linear-gradient(45deg, #00ff88, #3a86ff)',
+                            flex: 1
+                          }}
+                          className="synthwave-button"
                         >
-                          Resume
+                          ▶️ RESUME
                         </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              
+              <button 
+                onClick={() => { getQueueStatus(); getQueueStats(); }}
+                style={{
+                  ...synthwaveStyles.button,
+                  marginTop: '20px',
+                  background: 'linear-gradient(45deg, #8338ec, #3a86ff)'
+                }}
+                className="synthwave-button"
+              >
+                🔄 REFRESH DASHBOARD
+              </button>
+            </div>
+            
+            {/* Queue Statistics */}
+            {queueStats && (
+              <div style={synthwaveStyles.card} className="synthwave-card">
+                <h2 style={synthwaveStyles.cardTitle}>📊 QUEUE STATISTICS</h2>
+                <div style={synthwaveStyles.grid}>
+                  {queueStats.detailed_stats?.map((stat: any, index: number) => (
+                    <div key={index} style={{
+                      background: 'rgba(131, 56, 236, 0.1)',
+                      border: '1px solid rgba(131, 56, 236, 0.3)',
+                      borderRadius: '10px',
+                      padding: '20px'
+                    }}>
+                      <h4 style={{ color: '#8338ec', marginBottom: '15px', textTransform: 'uppercase' }}>
+                        {stat.stage} - {stat.status}
+                      </h4>
+                      
+                      <div style={{ display: 'grid', gap: '10px' }}>
+                        <div>
+                          <span style={{ color: '#ff006e' }}>Count:</span>
+                          <span style={{ color: '#ffffff', marginLeft: '10px', fontSize: '1.2em' }}>{stat.count}</span>
+                        </div>
+                        <div>
+                          <span style={{ color: '#ff006e' }}>Avg Retries:</span>
+                          <span style={{ color: '#ffffff', marginLeft: '10px' }}>{stat.avg_retries?.toFixed(2) || 0}</span>
+                        </div>
+                        {stat.oldest_post && (
+                          <div>
+                            <span style={{ color: '#ff006e' }}>Oldest:</span>
+                            <div style={{ color: '#3a86ff', fontSize: '0.9em', marginTop: '5px' }}>
+                              {new Date(stat.oldest_post).toLocaleString()}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     </div>
                   ))}
                 </div>
               </div>
             )}
-            
-            {/* Queue Statistics */}
-            {queueStats && (
-              <div style={{ marginBottom: '20px' }}>
-                <h3>Queue Statistics</h3>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '10px' }}>
-                  {queueStats.detailed_stats?.map((stat: any, index: number) => (
-                    <div key={index} style={{ border: '1px solid #ccc', padding: '10px', borderRadius: '4px' }}>
-                      <h4>{stat.stage} - {stat.status}</h4>
-                      <p>Count: {stat.count}</p>
-                      <p>Avg Retries: {stat.avg_retries?.toFixed(2) || 0}</p>
-                      {stat.oldest_post && <p>Oldest: {new Date(stat.oldest_post).toLocaleString()}</p>}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-            
-            <button 
-              onClick={() => { getQueueStatus(); getQueueStats(); }}
-              style={{ padding: '10px 20px', background: '#007bff', color: 'white', border: 'none', borderRadius: '4px' }}
-            >
-              Refresh Dashboard
-            </button>
           </div>
         )}
-      </div>
-
-      <div style={{ marginBottom: '20px' }}>
-        <h2>Agent Management</h2>
-        <button 
-          onClick={() => {
-            setShowAgentManager(!showAgentManager)
-            if (!showAgentManager) {
-              getAgentPrompts()
-              getAgentConfig()
-            }
-          }}
-          style={{ padding: '8px 16px', marginBottom: '10px' }}
-        >
-          {showAgentManager ? 'Hide Agent Manager' : 'Show Agent Manager'}
-        </button>
         
-        {showAgentManager && (
-          <div style={{ border: '1px solid #ddd', padding: '15px', borderRadius: '4px', background: '#f9f9f9' }}>
-            
+        
+        {activeTab === 'agents' && (
+          <div>
             {/* Agent Configuration Overview */}
             {agentConfig && (
-              <div style={{ marginBottom: '20px' }}>
-                <h3>Agent Configuration</h3>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '10px' }}>
+              <div style={synthwaveStyles.card} className="synthwave-card">
+                <h2 style={synthwaveStyles.cardTitle}>🧠 AGENT CONFIGURATION & ENDPOINTS</h2>
+                <div style={synthwaveStyles.grid}>
                   {Object.entries(agentConfig.config || {}).map(([stage, config]: [string, any]) => (
-                    <div key={stage} style={{ border: '1px solid #ccc', padding: '10px', borderRadius: '4px', background: 'white' }}>
-                      <h4>{stage.charAt(0).toUpperCase() + stage.slice(1)}</h4>
-                      <p><strong>Model:</strong> {config.model}</p>
-                      <p><strong>Endpoint:</strong> {config.endpoint}</p>
-                      <p><strong>Max Concurrent:</strong> {config.max_concurrent}</p>
-                      <p><strong>Description:</strong> {config.description}</p>
+                    <div key={stage} style={{
+                      background: 'rgba(58, 134, 255, 0.1)',
+                      border: '1px solid rgba(58, 134, 255, 0.3)',
+                      borderRadius: '15px',
+                      padding: '20px'
+                    }}>
+                      <h3 style={{ color: '#3a86ff', marginBottom: '15px', textTransform: 'uppercase' }}>
+                        {stage} AGENT
+                      </h3>
+                      
+                      <div style={{ display: 'grid', gap: '15px', fontSize: '0.9em' }}>
+                        {/* Endpoint Configuration */}
+                        <div>
+                          <label style={{ display: 'block', marginBottom: '5px', color: '#ff006e', fontSize: '0.9em' }}>Endpoint URL:</label>
+                          <input
+                            id={`endpoint-${stage}`}
+                            type="text"
+                            defaultValue={currentEndpoints[stage] || config.endpoint}
+                            key={`${stage}-${currentEndpoints[stage] || config.endpoint}`} // Force re-render when endpoint changes
+                            placeholder="http://localhost:11434 (base URL only, /v1/models will be auto-appended)"
+                            style={{
+                              ...synthwaveStyles.input,
+                              fontSize: '0.9em',
+                              marginBottom: '5px'
+                            }}
+                            className="synthwave-input"
+                            onBlur={async (e) => {
+                              const url = e.target.value.trim()
+                              if (url && url !== config.endpoint) {
+                                console.log(`Auto-polling models for updated endpoint: ${url}`)
+                                // Update the current endpoint for this stage
+                                setCurrentEndpoints(prev => ({ ...prev, [stage]: url }))
+                                // Silently fetch models when endpoint changes
+                                await testEndpointAndFetchModels(url)
+                              }
+                            }}
+                          />
+                          <button
+                            onClick={async () => {
+                              const input = document.getElementById(`endpoint-${stage}`) as HTMLInputElement
+                              const url = input?.value.trim()
+                              
+                              if (!url) {
+                                alert('⚠️ Please enter an endpoint URL')
+                                return
+                              }
+                              
+                              console.log(`Testing endpoint for ${stage}:`, url)
+                              const result = await testEndpointAndFetchModels(url, stage)
+                              
+                              if (result.success) {
+                                alert(`✅ Endpoint connected successfully!\n\nFound ${result.models.length} models:\n${result.models.slice(0, 5).join('\n')}${result.models.length > 5 ? '\n...' : ''}`)
+                              } else {
+                                alert(`❌ Failed to connect to endpoint:\n\n${result.error}`)
+                              }
+                            }}
+                            disabled={testingEndpoint === stage}
+                            style={{
+                              ...synthwaveStyles.button,
+                              background: testingEndpoint === stage 
+                                ? 'rgba(255, 255, 255, 0.1)' 
+                                : 'linear-gradient(45deg, #00ff88, #3a86ff)',
+                              fontSize: '0.8em',
+                              padding: '6px 12px',
+                              cursor: testingEndpoint === stage ? 'not-allowed' : 'pointer',
+                              opacity: testingEndpoint === stage ? 0.6 : 1
+                            }}
+                            className={testingEndpoint === stage ? '' : 'synthwave-button'}
+                          >
+                            {testingEndpoint === stage ? (
+                              <>
+                                <span className="loading-spinner" style={{marginRight: '6px'}}></span>
+                                TESTING...
+                              </>
+                            ) : (
+                              '🔍 TEST ENDPOINT'
+                            )}
+                          </button>
+                        </div>
+
+                        {/* Model Selection */}
+                        <div>
+                          <label style={{ display: 'block', marginBottom: '5px', color: '#ff006e', fontSize: '0.9em' }}>Selected Model:</label>
+                          <select
+                            defaultValue={currentModels[stage] || config.model}
+                            key={`model-${stage}-${currentModels[stage] || config.model}`} // Force re-render when model changes
+                            style={{
+                              ...synthwaveStyles.input,
+                              fontSize: '0.9em',
+                              cursor: 'pointer'
+                            }}
+                            className="synthwave-input"
+                            onChange={(e) => {
+                              const newModel = e.target.value
+                              console.log(`🔄 Model changed for ${stage}: ${newModel}`)
+                              setCurrentModels(prev => ({ ...prev, [stage]: newModel }))
+                            }}
+                          >
+                            <option value={currentModels[stage] || config.model}>
+                              {currentModels[stage] || config.model} (current)
+                            </option>
+                            {availableModels[currentEndpoints[stage] || config.endpoint]?.map((model: string, idx: number) => {
+                              const currentModel = currentModels[stage] || config.model
+                              return model !== currentModel && (
+                                <option key={idx} value={model}>{model}</option>
+                              )
+                            })}
+                          </select>
+                          {(() => {
+                            const currentEndpoint = currentEndpoints[stage] || config.endpoint
+                            return availableModels[currentEndpoint] ? (
+                              <div style={{ color: '#8338ec', fontSize: '0.8em', marginTop: '5px' }}>
+                                ✅ {availableModels[currentEndpoint].length} models available
+                                <br />
+                                <small style={{ color: '#666', fontSize: '0.7em' }}>
+                                  Cache key: {currentEndpoint}
+                                  <br />
+                                  All keys: {Object.keys(availableModels).join(', ')}
+                                  <br />
+                                  <span style={{ color: '#00ff88' }}>💾 Settings auto-saved</span>
+                                </small>
+                              </div>
+                            ) : currentEndpoint ? (
+                              <div style={{ color: '#ff006e', fontSize: '0.8em', marginTop: '5px' }}>
+                                🔍 Loading models from endpoint...
+                              </div>
+                            ) : (
+                              <div style={{ color: '#666', fontSize: '0.8em', marginTop: '5px' }}>
+                                ⚠️ Enter endpoint URL to see available models
+                              </div>
+                            )
+                          })()}
+                        </div>
+
+                        {/* Current Configuration Display */}
+                        <div style={{ 
+                          background: 'rgba(0, 0, 0, 0.2)', 
+                          padding: '15px', 
+                          borderRadius: '8px',
+                          fontSize: '0.85em'
+                        }}>
+                          <div style={{ marginBottom: '8px' }}>
+                            <span style={{ color: '#ff006e' }}>Max Concurrent:</span>
+                            <span style={{ color: '#ffffff', marginLeft: '10px' }}>{config.max_concurrent}</span>
+                          </div>
+                          <div style={{ marginBottom: '8px' }}>
+                            <span style={{ color: '#ff006e' }}>Cost Per Token:</span>
+                            <span style={{ color: '#ffffff', marginLeft: '10px' }}>${config.cost_per_token}</span>
+                          </div>
+                          <div>
+                            <span style={{ color: '#ff006e' }}>Description:</span>
+                            <div style={{ color: '#8338ec', marginTop: '5px', lineHeight: '1.3' }}>
+                              {config.description}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -534,17 +1103,31 @@ function App() {
             )}
             
             {/* System Prompts Management */}
-            <div>
-              <h3>System Prompts</h3>
+            <div style={synthwaveStyles.card} className="synthwave-card">
+              <h2 style={synthwaveStyles.cardTitle}>📝 SYSTEM PROMPT MANAGEMENT</h2>
               {agentPrompts.map((prompt, index) => (
-                <div key={index} style={{ marginBottom: '15px', padding: '10px', background: '#fff', borderRadius: '4px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-                    <h4>{prompt.agent_stage.charAt(0).toUpperCase() + prompt.agent_stage.slice(1)} Agent (v{prompt.version})</h4>
+                <div key={index} style={{
+                  background: 'rgba(131, 56, 236, 0.1)',
+                  border: '1px solid rgba(131, 56, 236, 0.3)',
+                  borderRadius: '15px',
+                  padding: '25px',
+                  marginBottom: '20px'
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
+                    <h3 style={{ color: '#8338ec', margin: 0, textTransform: 'uppercase' }}>
+                      {prompt.agent_stage} AGENT (v{prompt.version})
+                    </h3>
                     <button 
-                      onClick={() => setEditingPrompt(prompt)}
-                      style={{ padding: '4px 8px', fontSize: '12px' }}
+                      onClick={() => setEditingPrompt(editingPrompt?.agent_stage === prompt.agent_stage ? null : prompt)}
+                      style={{
+                        ...synthwaveStyles.button,
+                        background: editingPrompt?.agent_stage === prompt.agent_stage 
+                          ? 'linear-gradient(45deg, #ff3366, #ff006e)' 
+                          : 'linear-gradient(45deg, #00ff88, #3a86ff)'
+                      }}
+                      className="synthwave-button"
                     >
-                      Edit
+                      {editingPrompt?.agent_stage === prompt.agent_stage ? '❌ CANCEL' : '✏️ EDIT'}
                     </button>
                   </div>
                   
@@ -553,65 +1136,77 @@ function App() {
                       <textarea
                         value={editingPrompt.system_prompt}
                         onChange={(e) => setEditingPrompt({ ...editingPrompt, system_prompt: e.target.value })}
-                        style={{ width: '100%', minHeight: '100px', padding: '10px', marginBottom: '10px' }}
+                        style={{
+                          ...synthwaveStyles.input,
+                          minHeight: '200px',
+                          fontFamily: "'Courier New', monospace",
+                          fontSize: '13px',
+                          resize: 'vertical'
+                        }}
+                        placeholder="Enter system prompt for this agent..."
+                        className="synthwave-input"
                       />
-                      <button 
-                        onClick={() => updateAgentPrompt(editingPrompt.agent_stage, editingPrompt.system_prompt)}
-                        style={{ marginRight: '10px', padding: '8px 16px', background: '#28a745', color: 'white', border: 'none', borderRadius: '4px' }}
-                      >
-                        Save
-                      </button>
-                      <button 
-                        onClick={() => setEditingPrompt(null)}
-                        style={{ padding: '8px 16px', background: '#6c757d', color: 'white', border: 'none', borderRadius: '4px' }}
-                      >
-                        Cancel
-                      </button>
+                      <div style={{ display: 'flex', gap: '15px', marginTop: '15px' }}>
+                        <button 
+                          onClick={() => updateAgentPrompt(editingPrompt.agent_stage, editingPrompt.system_prompt)}
+                          style={{
+                            ...synthwaveStyles.button,
+                            background: 'linear-gradient(45deg, #00ff88, #3a86ff)',
+                            flex: 1
+                          }}
+                          className="synthwave-button"
+                        >
+                          💾 SAVE PROMPT
+                        </button>
+                        <button 
+                          onClick={() => setEditingPrompt(null)}
+                          style={{
+                            ...synthwaveStyles.button,
+                            background: 'linear-gradient(45deg, #ff3366, #ff006e)',
+                            flex: 1
+                          }}
+                          className="synthwave-button"
+                        >
+                          ❌ CANCEL
+                        </button>
+                      </div>
                     </div>
                   ) : (
-                    <div style={{ 
-                      background: '#f8f9fa', 
-                      padding: '10px', 
-                      borderRadius: '3px',
-                      fontFamily: 'monospace',
-                      fontSize: '0.9em',
-                      maxHeight: '100px',
-                      overflow: 'auto'
+                    <div style={{
+                      background: 'rgba(0, 0, 0, 0.3)',
+                      borderRadius: '10px',
+                      padding: '20px',
+                      fontFamily: "'Courier New', monospace",
+                      fontSize: '13px',
+                      maxHeight: '200px',
+                      overflowY: 'auto',
+                      color: '#ffffff',
+                      lineHeight: '1.5'
                     }}>
-                      {prompt.system_prompt || 'No system prompt configured'}
+                      {prompt.system_prompt || (
+                        <div style={{ color: '#8338ec', fontStyle: 'italic' }}>
+                          No system prompt configured for this agent
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
               ))}
+              
+              <button 
+                onClick={() => { getAgentPrompts(); getAgentConfig(); }}
+                style={{
+                  ...synthwaveStyles.button,
+                  background: 'linear-gradient(45deg, #8338ec, #ff006e)',
+                  marginTop: '20px'
+                }}
+                className="synthwave-button"
+              >
+                🔄 REFRESH AGENT DATA
+              </button>
             </div>
-            
-            <button 
-              onClick={() => { getAgentPrompts(); getAgentConfig(); }}
-              style={{ padding: '10px 20px', background: '#007bff', color: 'white', border: 'none', borderRadius: '4px' }}
-            >
-              Refresh Agent Data
-            </button>
           </div>
         )}
-      </div>
-
-      <div style={{ marginBottom: '20px' }}>
-        <h2>Posts</h2>
-        <button onClick={getPosts}>Get Posts</button>
-        <button onClick={insertDummy} style={{ marginLeft: '10px' }}>Insert Dummy</button>
-        <div style={{ marginTop: '10px' }}>
-          {posts.length === 0 ? (
-            <p>No posts found</p>
-          ) : (
-            posts.map((post, index) => (
-              <div key={index} style={{ border: '1px solid #ccc', padding: '10px', margin: '5px 0' }}>
-                <p><strong>Title:</strong> {post[2]}</p>
-                <p><strong>Author:</strong> {post[3]}</p>
-                <p><strong>URL:</strong> {post[5]}</p>
-              </div>
-            ))
-          )}
-        </div>
       </div>
     </div>
   )
