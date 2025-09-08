@@ -3,7 +3,7 @@ version: '3.8'
 services:
   db:
     image: postgres:16
-    container_name: reddit-monitor-db
+    container_name: reddit-claim-verifier-db
     environment:
       POSTGRES_DB: ${DB_NAME:-redditmon}
       POSTGRES_USER: ${DB_USER:-redditmon}
@@ -20,7 +20,7 @@ services:
 
   backend:
     build: ./backend
-    container_name: reddit-monitor-backend
+    container_name: reddit-claim-verifier-backend
     environment:
       - DB_HOST=db
       - DB_PORT=5432
@@ -31,7 +31,7 @@ services:
       - REDDIT_CLIENT_SECRET=${REDDIT_CLIENT_SECRET}
       - REDDIT_USERNAME=${REDDIT_USERNAME}
       - REDDIT_PASSWORD=${REDDIT_PASSWORD}
-      - REDDIT_USER_AGENT=${REDDIT_USER_AGENT:-reddit-monitor-bot/1.0}
+      - REDDIT_USER_AGENT=${REDDIT_USER_AGENT:-reddit-claim-verifier/1.0}
       - BRAVE_API_KEY=${BRAVE_API_KEY}
       - TRIAGE_ENDPOINT=${TRIAGE_ENDPOINT:-http://localhost:8001}
       - RESEARCH_ENDPOINT=${RESEARCH_ENDPOINT:-http://localhost:8002}
@@ -48,7 +48,7 @@ services:
 
   frontend:
     build: ./frontend
-    container_name: reddit-monitor-frontend
+    container_name: reddit-claim-verifier-frontend
     ports:
       - "5173:5173"
     depends_on:

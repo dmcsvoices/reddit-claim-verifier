@@ -82,7 +82,7 @@ function App() {
 
   return (
     <div style={{ padding: '20px', fontFamily: 'Arial, sans-serif' }}>
-      <h1>Reddit Monitor</h1>
+      <h1>Reddit Claim Verifier</h1>
       
       <div style={{ marginBottom: '20px' }}>
         <h2>Health Check</h2>

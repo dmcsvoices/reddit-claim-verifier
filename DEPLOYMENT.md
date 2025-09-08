@@ -8,7 +8,7 @@ This guide covers deploying the Reddit Monitor system in different environments.
 ```bash
 # 1. Clone and setup
 git clone <repo-url>
-cd reddit-monitor-fresh
+cd reddit-claim-verifier
 cp .env.example .env
 
 # 2. Edit .env with your credentials
@@ -153,8 +153,8 @@ networks:
 1. **Build and push images**:
 ```bash
 # Build images
-docker build -t reddit-monitor-backend ./backend
-docker build -t reddit-monitor-frontend ./frontend
+docker build -t reddit-claim-verifier-backend ./backend
+docker build -t reddit-claim-verifier-frontend ./frontend
 
 # Tag for ECR
 docker tag reddit-monitor-backend:latest 123456789012.dkr.ecr.us-east-1.amazonaws.com/reddit-monitor-backend:latest
@@ -169,7 +169,7 @@ docker push 123456789012.dkr.ecr.us-east-1.amazonaws.com/reddit-monitor-frontend
 2. **Create task definition** (`task-definition.json`):
 ```json
 {
-  "family": "reddit-monitor",
+  "family": "reddit-claim-verifier",
   "networkMode": "awsvpc",
   "requiresCompatibilities": ["FARGATE"],
   "cpu": "1024",

@@ -1,4 +1,4 @@
-# Reddit Monitor with LLM Queue Processing
+# Reddit Claim Verifier
 
 An automated fact-checking system for Reddit posts using a multi-stage LLM processing pipeline. The system monitors subreddits for new posts, identifies factual claims, researches them using web search, generates fact-based responses, and can post corrections back to Reddit.
 
@@ -17,7 +17,7 @@ An automated fact-checking system for Reddit posts using a multi-stage LLM proce
 ```bash
 # Clone the repository
 git clone <your-repo-url>
-cd reddit-monitor-fresh
+cd reddit-claim-verifier
 
 # Copy environment template
 cp .env.example .env

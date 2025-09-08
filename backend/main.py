@@ -14,14 +14,14 @@ from .queue.queue_manager import start_queue_manager, stop_queue_manager, get_qu
 async def lifespan(app: FastAPI):
     """FastAPI lifespan context manager"""
     # Startup
-    print("Starting Reddit Monitor with Queue Management...")
+    print("Starting Reddit Claim Verifier with Queue Management...")
     await start_queue_manager()
     yield
     # Shutdown
     print("Shutting down Queue Management...")
     await stop_queue_manager()
 
-app = FastAPI(title="Reddit Monitor", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="Reddit Claim Verifier", version="1.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -43,7 +43,7 @@ def get_reddit_client():
         client_secret=os.getenv("REDDIT_CLIENT_SECRET"),
         username=os.getenv("REDDIT_USERNAME"),
         password=os.getenv("REDDIT_PASSWORD"),
-        user_agent=os.getenv("REDDIT_USER_AGENT", "reddit-monitor-bot/1.0")
+        user_agent=os.getenv("REDDIT_USER_AGENT", "reddit-claim-verifier/1.0")
     )
 
 def get_db_connection():

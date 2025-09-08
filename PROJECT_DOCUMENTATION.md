@@ -1,8 +1,8 @@
-# Reddit Monitor with LLM Queue Processing System
+# Reddit Claim Verifier
 
 ## Project Overview
 
-This project implements an automated fact-checking system for Reddit posts using a multi-stage LLM processing pipeline. The system monitors subreddits for new posts, identifies factual claims, researches them using web search, generates fact-based responses, and can post corrections back to Reddit.
+This project implements an automated claim verification system for Reddit posts using a multi-stage LLM processing pipeline. The system monitors subreddits for new posts, identifies factual claims, researches them using web search, generates fact-based responses, and can post corrections back to Reddit.
 
 ## Architecture
 

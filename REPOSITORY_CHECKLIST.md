@@ -56,7 +56,7 @@ This document verifies that the codebase is ready for GitHub repository creation
 
 ### Directory Structure
 ```
-reddit-monitor-fresh/
+reddit-claim-verifier/
 ├── backend/                 # FastAPI application
 │   ├── agents/             # LLM agent implementations
 │   ├── queue/              # Queue management system  
@@ -204,7 +204,7 @@ The repository is ready for:
    
    Co-Authored-By: Claude <noreply@anthropic.com>"
    git branch -M main
-   git remote add origin https://github.com/yourusername/reddit-monitor-fresh.git
+   git remote add origin https://github.com/yourusername/reddit-claim-verifier.git
    git push -u origin main
    ```
 
