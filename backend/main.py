@@ -18,11 +18,84 @@ if str(current_dir) not in sys.path:
 
 from queue_management.queue_manager import start_queue_manager, stop_queue_manager, get_queue_status
 
+async def setup_database_schema():
+    """Setup database schema for queue management"""
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            # Add queue management columns to posts table
+            print("Setting up database schema for queue management...")
+            
+            # Add queue columns if they don't exist
+            cur.execute("""
+                ALTER TABLE posts 
+                ADD COLUMN IF NOT EXISTS queue_stage VARCHAR(50) DEFAULT 'triage',
+                ADD COLUMN IF NOT EXISTS queue_status VARCHAR(50) DEFAULT 'pending',
+                ADD COLUMN IF NOT EXISTS assigned_to VARCHAR(100),
+                ADD COLUMN IF NOT EXISTS assigned_at TIMESTAMP,
+                ADD COLUMN IF NOT EXISTS processed_at TIMESTAMP,
+                ADD COLUMN IF NOT EXISTS retry_count INTEGER DEFAULT 0,
+                ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}';
+            """)
+            
+            # Create agent_prompts table
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS agent_prompts (
+                    id SERIAL PRIMARY KEY,
+                    agent_stage VARCHAR(50) NOT NULL,
+                    system_prompt TEXT NOT NULL,
+                    version INTEGER DEFAULT 1,
+                    is_active BOOLEAN DEFAULT true,
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    updated_at TIMESTAMP DEFAULT NOW()
+                );
+            """)
+            
+            # Create queue_state table
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS queue_state (
+                    id SERIAL PRIMARY KEY,
+                    stage VARCHAR(50) UNIQUE NOT NULL,
+                    is_paused BOOLEAN DEFAULT false,
+                    updated_at TIMESTAMP DEFAULT NOW()
+                );
+            """)
+            
+            # Create queue_results table
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS queue_results (
+                    id SERIAL PRIMARY KEY,
+                    post_id INTEGER REFERENCES posts(id),
+                    stage VARCHAR(50) NOT NULL,
+                    content JSONB,
+                    success BOOLEAN DEFAULT true,
+                    error_message TEXT,
+                    processing_time REAL,
+                    created_at TIMESTAMP DEFAULT NOW()
+                );
+            """)
+            
+            # Initialize queue states if empty
+            cur.execute("""
+                INSERT INTO queue_state (stage, is_paused) 
+                VALUES ('triage', false), ('research', false), ('response', false), ('editorial', false)
+                ON CONFLICT (stage) DO NOTHING;
+            """)
+            
+        conn.commit()
+        print("Database schema setup completed successfully")
+    except Exception as e:
+        print(f"Error setting up database schema: {e}")
+        conn.rollback()
+    finally:
+        conn.close()
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """FastAPI lifespan context manager"""
     # Startup
     print("Starting Reddit Claim Verifier with Queue Management...")
+    await setup_database_schema()
     await start_queue_manager()
     yield
     # Shutdown
