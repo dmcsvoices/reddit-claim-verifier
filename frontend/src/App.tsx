@@ -170,8 +170,9 @@ function App() {
     try {
       const response = await fetch(`${API_BASE}/queue/pause/${stage}`, { method: 'POST' })
       if (response.ok) {
-        getQueueStatus() // Refresh status
-        getQueueStats() // Refresh stats
+        const result = await response.json()
+        console.log(`Queue ${stage} paused:`, result)
+        getQueueStatus() // Refresh status only
       }
     } catch (error) {
       console.error(`Failed to pause ${stage}:`, error)
@@ -182,8 +183,9 @@ function App() {
     try {
       const response = await fetch(`${API_BASE}/queue/resume/${stage}`, { method: 'POST' })
       if (response.ok) {
-        getQueueStatus() // Refresh status
-        getQueueStats() // Refresh stats
+        const result = await response.json()
+        console.log(`Queue ${stage} resumed:`, result)
+        getQueueStatus() // Refresh status only
       }
     } catch (error) {
       console.error(`Failed to resume ${stage}:`, error)
