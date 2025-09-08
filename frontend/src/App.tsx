@@ -530,6 +530,65 @@ function App() {
                 </div>
               </div>
             )}
+            
+            {/* System Prompts Management */}
+            <div>
+              <h3>System Prompts</h3>
+              {agentPrompts.map((prompt, index) => (
+                <div key={index} style={{ marginBottom: '15px', padding: '10px', background: '#fff', borderRadius: '4px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+                    <h4>{prompt.agent_stage.charAt(0).toUpperCase() + prompt.agent_stage.slice(1)} Agent (v{prompt.version})</h4>
+                    <button 
+                      onClick={() => setEditingPrompt(prompt)}
+                      style={{ padding: '4px 8px', fontSize: '12px' }}
+                    >
+                      Edit
+                    </button>
+                  </div>
+                  
+                  {editingPrompt?.agent_stage === prompt.agent_stage ? (
+                    <div>
+                      <textarea
+                        value={editingPrompt.system_prompt}
+                        onChange={(e) => setEditingPrompt({ ...editingPrompt, system_prompt: e.target.value })}
+                        style={{ width: '100%', minHeight: '100px', padding: '10px', marginBottom: '10px' }}
+                      />
+                      <button 
+                        onClick={() => updateAgentPrompt(editingPrompt.agent_stage, editingPrompt.system_prompt)}
+                        style={{ marginRight: '10px', padding: '8px 16px', background: '#28a745', color: 'white', border: 'none', borderRadius: '4px' }}
+                      >
+                        Save
+                      </button>
+                      <button 
+                        onClick={() => setEditingPrompt(null)}
+                        style={{ padding: '8px 16px', background: '#6c757d', color: 'white', border: 'none', borderRadius: '4px' }}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  ) : (
+                    <div style={{ 
+                      background: '#f8f9fa', 
+                      padding: '10px', 
+                      borderRadius: '3px',
+                      fontFamily: 'monospace',
+                      fontSize: '0.9em',
+                      maxHeight: '100px',
+                      overflow: 'auto'
+                    }}>
+                      {prompt.system_prompt || 'No system prompt configured'}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+            
+            <button 
+              onClick={() => { getAgentPrompts(); getAgentConfig(); }}
+              style={{ padding: '10px 20px', background: '#007bff', color: 'white', border: 'none', borderRadius: '4px' }}
+            >
+              Refresh Agent Data
+            </button>
           </div>
         )}
       </div>
