@@ -231,6 +231,44 @@ function App() {
     }
   }
 
+  const pauseQueue = async (stage: string) => {
+    try {
+      const response = await fetch(`${API_BASE}/queue/pause/${stage}`, {
+        method: 'POST'
+      })
+      
+      if (response.ok) {
+        const result = await response.json()
+        console.log(`Queue ${stage} paused:`, result)
+        // Refresh queue status to show updated state
+        getQueueStatus()
+      } else {
+        console.error(`Failed to pause queue ${stage}`)
+      }
+    } catch (error) {
+      console.error(`Failed to pause queue ${stage}:`, error)
+    }
+  }
+
+  const resumeQueue = async (stage: string) => {
+    try {
+      const response = await fetch(`${API_BASE}/queue/resume/${stage}`, {
+        method: 'POST'
+      })
+      
+      if (response.ok) {
+        const result = await response.json()
+        console.log(`Queue ${stage} resumed:`, result)
+        // Refresh queue status to show updated state
+        getQueueStatus()
+      } else {
+        console.error(`Failed to resume queue ${stage}`)
+      }
+    } catch (error) {
+      console.error(`Failed to resume queue ${stage}:`, error)
+    }
+  }
+
   useEffect(() => {
     checkHealth()
     getPosts()
