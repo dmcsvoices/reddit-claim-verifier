@@ -6,6 +6,26 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
+from pathlib import Path
+
+# Load environment variables from .env file
+def load_env_file():
+    """Load environment variables from .env file"""
+    env_path = Path(__file__).parent.parent / '.env'
+    if env_path.exists():
+        with open(env_path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    key, value = line.split('=', 1)
+                    if key and value and key not in os.environ:
+                        os.environ[key] = value
+        print(f"✓ Loaded environment from {env_path}")
+    else:
+        print(f"⚠️  No .env file found at {env_path}")
+
+# Load environment on import
+load_env_file()
 
 # Import queue management system
 from .queue.queue_manager import start_queue_manager, stop_queue_manager, get_queue_status
@@ -38,12 +58,30 @@ class ScanRequest(BaseModel):
 
 # Reddit client setup
 def get_reddit_client():
+    client_id = os.getenv("REDDIT_CLIENT_ID")
+    client_secret = os.getenv("REDDIT_CLIENT_SECRET")
+    username = os.getenv("REDDIT_USERNAME")
+    password = os.getenv("REDDIT_PASSWORD")
+    user_agent = os.getenv("REDDIT_USER_AGENT", "reddit-claim-verifier/1.0")
+    
+    # Debug: Log what credentials we're using (masked)
+    print(f"🔐 Reddit Auth Debug:")
+    print(f"   Client ID: {client_id[:5] + '...' + client_id[-3:] if client_id else 'NOT_SET'}")
+    print(f"   Client Secret: {client_secret[:5] + '...' + client_secret[-3:] if client_secret and len(client_secret) > 8 else 'NOT_SET'}")
+    print(f"   Username: {username if username else 'NOT_SET'}")
+    print(f"   Password: {'*' * len(password) if password else 'NOT_SET'}")
+    print(f"   User Agent: {user_agent}")
+    
+    if not all([client_id, client_secret, username, password]):
+        print("❌ Missing Reddit credentials in environment variables")
+        return None
+    
     return praw.Reddit(
-        client_id=os.getenv("REDDIT_CLIENT_ID"),
-        client_secret=os.getenv("REDDIT_CLIENT_SECRET"),
-        username=os.getenv("REDDIT_USERNAME"),
-        password=os.getenv("REDDIT_PASSWORD"),
-        user_agent=os.getenv("REDDIT_USER_AGENT", "reddit-claim-verifier/1.0")
+        client_id=client_id,
+        client_secret=client_secret,
+        username=username,
+        password=password,
+        user_agent=user_agent
     )
 
 def get_db_connection():
@@ -163,11 +201,29 @@ def scan_subreddit(request: ScanRequest):
     try:
         reddit = get_reddit_client()
         
+        if reddit is None:
+            raise HTTPException(status_code=500, detail="Reddit client could not be created - check environment variables")
+        
         # Test Reddit connection
         try:
-            reddit.user.me()
+            user = reddit.user.me()
+            print(f"✅ Successfully authenticated as u/{user.name}")
         except Exception as e:
-            raise HTTPException(status_code=401, detail=f"Reddit authentication failed: {str(e)}")
+            error_msg = str(e)
+            print(f"❌ Reddit authentication failed: {error_msg}")
+            
+            # Provide specific error messages for common issues
+            if "401" in error_msg or "Unauthorized" in error_msg:
+                if "may be restricted" in error_msg.lower() or "suspended" in error_msg.lower():
+                    detail = "Reddit authentication failed: Account may be restricted or suspended. Check your Reddit account status."
+                else:
+                    detail = "Reddit authentication failed: Invalid credentials. Check your Client ID, Client Secret, username, and password in .env file."
+            elif "429" in error_msg or "rate limit" in error_msg.lower():
+                detail = "Reddit authentication failed: Rate limited. Try again in a few minutes."
+            else:
+                detail = f"Reddit authentication failed: {error_msg}"
+                
+            raise HTTPException(status_code=401, detail=detail)
         
         # Calculate time threshold (posts within specified hours)
         cutoff_time = datetime.now(timezone.utc) - timedelta(hours=request.hours)
