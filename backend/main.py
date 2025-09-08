@@ -606,9 +606,22 @@ async def get_agent_config():
         # Import here to avoid circular imports
         from agents.agent_config import AGENT_CONFIG, get_agent_summary
         
+        # Create JSON-serializable version of config without class objects
+        serializable_config = {}
+        for stage, config in AGENT_CONFIG.items():
+            serializable_config[stage] = {
+                "model": config["model"],
+                "endpoint": config["endpoint"],
+                "timeout": config["timeout"],
+                "max_concurrent": config["max_concurrent"],
+                "description": config["description"],
+                "cost_per_token": config["cost_per_token"],
+                "class_name": config["class"].__name__ if hasattr(config["class"], "__name__") else str(config["class"])
+            }
+        
         summary = get_agent_summary()
         return {
-            "config": AGENT_CONFIG,
+            "config": serializable_config,
             "summary": summary
         }
         
