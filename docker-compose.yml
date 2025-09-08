@@ -21,30 +21,18 @@ services:
   backend:
     build: ./backend
     container_name: reddit-claim-verifier-backend
-    environment:
-      - DB_HOST=db
-      - DB_PORT=5432
-      - DB_NAME=${DB_NAME:-redditmon}
-      - DB_USER=${DB_USER:-redditmon}
-      - DB_PASSWORD=${DB_PASSWORD:-supersecret}
-      - REDDIT_CLIENT_ID=${REDDIT_CLIENT_ID}
-      - REDDIT_CLIENT_SECRET=${REDDIT_CLIENT_SECRET}
-      - REDDIT_USERNAME=${REDDIT_USERNAME}
-      - REDDIT_PASSWORD=${REDDIT_PASSWORD}
-      - REDDIT_USER_AGENT=${REDDIT_USER_AGENT:-reddit-claim-verifier/1.0}
-      - BRAVE_API_KEY=${BRAVE_API_KEY}
-      - TRIAGE_ENDPOINT=${TRIAGE_ENDPOINT:-http://localhost:8001}
-      - RESEARCH_ENDPOINT=${RESEARCH_ENDPOINT:-http://localhost:8002}
-      - RESPONSE_ENDPOINT=${RESPONSE_ENDPOINT:-http://localhost:8002}
-      - EDITORIAL_ENDPOINT=${EDITORIAL_ENDPOINT:-http://localhost:8001}
+    restart: unless-stopped
+    env_file:
+      - .env
     ports:
       - "5151:5151"
     volumes:
       - ./secret:/app/secret:ro
+      - ./.env:/app/.env:rw
     depends_on:
       db:
         condition: service_healthy
-    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "5151"]
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "5151", "--reload"]
 
   frontend:
     build: ./frontend

@@ -5,43 +5,8 @@ from datetime import datetime, timedelta, timezone
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from contextlib import asynccontextmanager
-from pathlib import Path
 
-# Load environment variables from .env file
-def load_env_file():
-    """Load environment variables from .env file"""
-    env_path = Path(__file__).parent.parent / '.env'
-    if env_path.exists():
-        with open(env_path, 'r') as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith('#') and '=' in line:
-                    key, value = line.split('=', 1)
-                    if key and value and key not in os.environ:
-                        os.environ[key] = value
-        print(f"✓ Loaded environment from {env_path}")
-    else:
-        print(f"⚠️  No .env file found at {env_path}")
-
-# Load environment on import
-load_env_file()
-
-# Import queue management system
-from .queue.queue_manager import start_queue_manager, stop_queue_manager, get_queue_status
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """FastAPI lifespan context manager"""
-    # Startup
-    print("Starting Reddit Claim Verifier with Queue Management...")
-    await start_queue_manager()
-    yield
-    # Shutdown
-    print("Shutting down Queue Management...")
-    await stop_queue_manager()
-
-app = FastAPI(title="Reddit Claim Verifier", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="Reddit Claim Verifier", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -95,10 +60,9 @@ def get_db_connection():
 
 @app.on_event("startup")
 def startup():
-    # Create tables for queue management
+    # Create tables
     conn = get_db_connection()
     with conn.cursor() as cur:
-        # Enhanced posts table with queue management columns
         cur.execute("""
             CREATE TABLE IF NOT EXISTS posts (
                 id SERIAL PRIMARY KEY,
@@ -108,57 +72,9 @@ def startup():
                 created_utc TIMESTAMPTZ,
                 url TEXT,
                 body TEXT,
-                inserted_at TIMESTAMPTZ DEFAULT NOW(),
-                -- Queue management columns
-                queue_stage VARCHAR(20) DEFAULT 'triage',
-                queue_status VARCHAR(20) DEFAULT 'pending',
-                assigned_to VARCHAR(50) NULL,
-                assigned_at TIMESTAMPTZ NULL,
-                processed_at TIMESTAMPTZ NULL,
-                retry_count INTEGER DEFAULT 0,
-                metadata JSONB DEFAULT '{}'
+                inserted_at TIMESTAMPTZ DEFAULT NOW()
             )
         """)
-        
-        # Queue results table
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS queue_results (
-                id SERIAL PRIMARY KEY,
-                post_id INTEGER REFERENCES posts(id),
-                stage VARCHAR(20) NOT NULL,
-                result JSONB NOT NULL,
-                created_at TIMESTAMPTZ DEFAULT NOW()
-            )
-        """)
-        
-        # LLM endpoints tracking table
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS llm_endpoints (
-                id SERIAL PRIMARY KEY,
-                name VARCHAR(50) UNIQUE NOT NULL,
-                url VARCHAR(200) NOT NULL,
-                capabilities JSONB NOT NULL,
-                max_concurrent INTEGER DEFAULT 1,
-                current_load INTEGER DEFAULT 0
-            )
-        """)
-        
-        # Add indexes for queue performance
-        cur.execute("""
-            CREATE INDEX IF NOT EXISTS idx_posts_queue_stage_status 
-            ON posts (queue_stage, queue_status)
-        """)
-        
-        cur.execute("""
-            CREATE INDEX IF NOT EXISTS idx_posts_assigned_at 
-            ON posts (assigned_at) WHERE assigned_at IS NOT NULL
-        """)
-        
-        cur.execute("""
-            CREATE INDEX IF NOT EXISTS idx_queue_results_post_stage 
-            ON queue_results (post_id, stage)
-        """)
-        
         conn.commit()
     conn.close()
 
@@ -182,19 +98,6 @@ def get_posts():
         posts = cur.fetchall()
     conn.close()
     return {"posts": posts}
-
-@app.post("/dummy-insert")
-def dummy_insert():
-    conn = get_db_connection()
-    with conn.cursor() as cur:
-        cur.execute("""
-            INSERT INTO posts (reddit_id, title, author, url, body) 
-            VALUES (%s, %s, %s, %s, %s)
-            ON CONFLICT (reddit_id) DO NOTHING
-        """, ("test123", "Test Post", "testuser", "http://example.com", "Test body"))
-        conn.commit()
-    conn.close()
-    return {"message": "Test post inserted"}
 
 @app.post("/scan")
 def scan_subreddit(request: ScanRequest):
@@ -247,8 +150,8 @@ def scan_subreddit(request: ScanRequest):
             try:
                 with conn.cursor() as cur:
                     cur.execute("""
-                        INSERT INTO posts (reddit_id, title, author, created_utc, url, body, queue_stage, queue_status) 
-                        VALUES (%s, %s, %s, %s, %s, %s, 'triage', 'pending')
+                        INSERT INTO posts (reddit_id, title, author, created_utc, url, body) 
+                        VALUES (%s, %s, %s, %s, %s, %s)
                         ON CONFLICT (reddit_id) DO NOTHING
                         RETURNING id
                     """, (
@@ -290,168 +193,87 @@ def scan_subreddit(request: ScanRequest):
             raise HTTPException(status_code=401, detail=str(e))
         raise HTTPException(status_code=500, detail=f"Scan failed: {str(e)}")
 
+# Pydantic model for credentials update
+class CredentialsUpdate(BaseModel):
+    reddit_client_id: str
+    reddit_client_secret: str
+    reddit_username: str
+    reddit_password: str
+    reddit_user_agent: str = "reddit-claim-verifier/1.0"
 
-# Queue Management API Endpoints
-
-@app.get("/queue/status")
-async def queue_status():
-    """Get current queue processing status"""
+@app.post("/update-credentials")
+def update_credentials(credentials: CredentialsUpdate):
     try:
-        status = await get_queue_status()
-        return status
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get queue status: {str(e)}")
-
-
-@app.get("/queue/stats")
-async def queue_stats():
-    """Get detailed queue statistics"""
-    try:
-        conn = get_db_connection()
-        with conn.cursor() as cur:
-            # Get detailed stats by stage and status
-            cur.execute("""
-                SELECT 
-                    queue_stage,
-                    queue_status,
-                    COUNT(*) as count,
-                    AVG(retry_count) as avg_retries,
-                    MIN(created_utc) as oldest_post,
-                    MAX(created_utc) as newest_post
-                FROM posts 
-                WHERE queue_stage IN ('triage', 'research', 'response', 'editorial', 'post_queue', 'completed', 'rejected')
-                GROUP BY queue_stage, queue_status
-                ORDER BY queue_stage, queue_status
-            """)
-            
-            detailed_stats = []
-            for row in cur.fetchall():
-                detailed_stats.append({
-                    "stage": row[0],
-                    "status": row[1], 
-                    "count": row[2],
-                    "avg_retries": float(row[3]) if row[3] else 0,
-                    "oldest_post": row[4].isoformat() if row[4] else None,
-                    "newest_post": row[5].isoformat() if row[5] else None
-                })
-            
-            # Get processing history
-            cur.execute("""
-                SELECT stage, COUNT(*) as total_processed
-                FROM queue_results
-                GROUP BY stage
-                ORDER BY stage
-            """)
-            
-            processing_history = {}
-            for stage, count in cur.fetchall():
-                processing_history[stage] = count
+        # Read current .env file
+        env_path = "/app/.env"  # Mounted .env file
+        env_lines = []
         
-        conn.close()
+        # Read existing .env file
+        try:
+            with open(env_path, 'r') as f:
+                env_lines = f.readlines()
+        except FileNotFoundError:
+            # Create basic .env structure if it doesn't exist
+            env_lines = [
+                "# Database Configuration\n",
+                "DB_HOST=db\n",
+                "DB_PORT=5432\n", 
+                "DB_NAME=redditmon\n",
+                "DB_USER=redditmon\n",
+                "DB_PASSWORD=supersecret\n",
+                "\n",
+                "# Reddit API Credentials\n",
+            ]
+        
+        # Update Reddit credentials in .env file
+        updated_lines = []
+        reddit_keys = {
+            'REDDIT_CLIENT_ID': credentials.reddit_client_id,
+            'REDDIT_CLIENT_SECRET': credentials.reddit_client_secret,
+            'REDDIT_USERNAME': credentials.reddit_username,
+            'REDDIT_PASSWORD': credentials.reddit_password,
+            'REDDIT_USER_AGENT': credentials.reddit_user_agent
+        }
+        
+        # Track which credentials we've updated
+        updated_keys = set()
+        
+        for line in env_lines:
+            line = line.strip()
+            if '=' in line and not line.startswith('#'):
+                key = line.split('=')[0]
+                if key in reddit_keys:
+                    updated_lines.append(f"{key}={reddit_keys[key]}\n")
+                    updated_keys.add(key)
+                else:
+                    updated_lines.append(line + '\n')
+            else:
+                updated_lines.append(line + '\n')
+        
+        # Add any missing Reddit credentials
+        for key, value in reddit_keys.items():
+            if key not in updated_keys:
+                updated_lines.append(f"{key}={value}\n")
+        
+        # Write updated .env file
+        with open(env_path, 'w') as f:
+            f.writelines(updated_lines)
         
         return {
-            "detailed_stats": detailed_stats,
-            "processing_history": processing_history,
-            "timestamp": datetime.now(timezone.utc).isoformat()
+            "message": "Credentials updated successfully. Backend restart required to take effect.",
+            "restart_required": True
         }
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get queue stats: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to update credentials: {str(e)}")
 
-
-@app.post("/queue/retry/{post_id}")
-async def retry_post(post_id: int):
-    """Manually retry a failed post"""
-    try:
-        conn = get_db_connection()
-        with conn.cursor() as cur:
-            # Reset post to pending status
-            cur.execute("""
-                UPDATE posts 
-                SET queue_status = 'pending',
-                    assigned_to = NULL,
-                    assigned_at = NULL,
-                    retry_count = 0
-                WHERE id = %s
-                RETURNING queue_stage, queue_status
-            """, (post_id,))
-            
-            result = cur.fetchone()
-            if not result:
-                raise HTTPException(status_code=404, detail="Post not found")
-            
-            conn.commit()
-        conn.close()
-        
-        return {
-            "message": f"Post {post_id} reset to pending status",
-            "stage": result[0],
-            "status": result[1]
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to retry post: {str(e)}")
-
-
-@app.get("/posts/{post_id}/history")
-async def get_post_history(post_id: int):
-    """Get complete processing history for a post"""
-    try:
-        conn = get_db_connection()
-        with conn.cursor() as cur:
-            # Get post details
-            cur.execute("""
-                SELECT id, reddit_id, title, author, created_utc, 
-                       queue_stage, queue_status, retry_count, metadata
-                FROM posts WHERE id = %s
-            """, (post_id,))
-            
-            post_row = cur.fetchone()
-            if not post_row:
-                raise HTTPException(status_code=404, detail="Post not found")
-            
-            post_data = {
-                "id": post_row[0],
-                "reddit_id": post_row[1],
-                "title": post_row[2],
-                "author": post_row[3],
-                "created_utc": post_row[4].isoformat() if post_row[4] else None,
-                "current_stage": post_row[5],
-                "current_status": post_row[6],
-                "retry_count": post_row[7],
-                "metadata": post_row[8]
-            }
-            
-            # Get processing history
-            cur.execute("""
-                SELECT stage, result, created_at
-                FROM queue_results
-                WHERE post_id = %s
-                ORDER BY created_at ASC
-            """, (post_id,))
-            
-            history = []
-            for stage, result_json, created_at in cur.fetchall():
-                history.append({
-                    "stage": stage,
-                    "result": result_json,
-                    "timestamp": created_at.isoformat()
-                })
-        
-        conn.close()
-        
-        return {
-            "post": post_data,
-            "processing_history": history
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get post history: {str(e)}")
-
+@app.post("/restart-backend")
+def restart_backend():
+    """Note: Manual restart required - Docker Compose doesn't auto-restart on SIGTERM"""
+    return {
+        "message": "Credentials updated. Please refresh the page in a few seconds - backend will reload environment variables.",
+        "note": "Docker restart is handled externally"
+    }
 
 if __name__ == "__main__":
     import uvicorn

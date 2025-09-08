@@ -9,6 +9,18 @@ function App() {
   const [hours, setHours] = useState(4)
   const [scanning, setScanning] = useState(false)
   const [scanResult, setScanResult] = useState<any>(null)
+  
+  // Credentials state
+  const [showCredentials, setShowCredentials] = useState(false)
+  const [credentials, setCredentials] = useState({
+    reddit_client_id: '',
+    reddit_client_secret: '',
+    reddit_username: '',
+    reddit_password: '',
+    reddit_user_agent: 'reddit-claim-verifier/1.0'
+  })
+  const [credentialsUpdating, setCredentialsUpdating] = useState(false)
+  const [credentialsResult, setCredentialsResult] = useState<any>(null)
 
   const checkHealth = async () => {
     try {
@@ -72,6 +84,53 @@ function App() {
       setScanResult({ error: error.message })
     } finally {
       setScanning(false)
+    }
+  }
+
+  const updateCredentials = async () => {
+    if (!credentials.reddit_client_id || !credentials.reddit_client_secret || 
+        !credentials.reddit_username || !credentials.reddit_password) {
+      alert('Please fill in all credential fields')
+      return
+    }
+
+    setCredentialsUpdating(true)
+    setCredentialsResult(null)
+    
+    try {
+      const response = await fetch(`${API_BASE}/update-credentials`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(credentials)
+      })
+      
+      const data = await response.json()
+      
+      if (!response.ok) {
+        throw new Error(data.detail || 'Failed to update credentials')
+      }
+      
+      setCredentialsResult(data)
+      
+      // Show success message and remind user to wait
+      if (data.restart_required) {
+        setCredentialsResult({ 
+          ...data, 
+          message: data.message + ' Please wait a moment for the backend to reload the new credentials...'
+        })
+        
+        // Check health status after a delay to see if credentials are working
+        setTimeout(() => {
+          checkHealth()
+        }, 3000)
+      }
+      
+    } catch (error) {
+      setCredentialsResult({ error: error.message })
+    } finally {
+      setCredentialsUpdating(false)
     }
   }
 
@@ -145,6 +204,114 @@ function App() {
                 )}
               </div>
             )}
+          </div>
+        )}
+      </div>
+
+      <div style={{ marginBottom: '20px' }}>
+        <h2>Reddit Credentials</h2>
+        <button 
+          onClick={() => setShowCredentials(!showCredentials)}
+          style={{ padding: '8px 16px', marginBottom: '10px' }}
+        >
+          {showCredentials ? 'Hide Credentials' : 'Update Credentials'}
+        </button>
+        
+        {showCredentials && (
+          <div style={{ border: '1px solid #ddd', padding: '15px', borderRadius: '4px', background: '#f9f9f9' }}>
+            <div style={{ marginBottom: '10px' }}>
+              <label style={{ display: 'block', marginBottom: '5px' }}>Reddit Client ID:</label>
+              <input
+                type="text"
+                value={credentials.reddit_client_id}
+                onChange={(e) => setCredentials({ ...credentials, reddit_client_id: e.target.value })}
+                placeholder="Your Reddit app client ID"
+                style={{ width: '100%', padding: '8px', marginBottom: '10px' }}
+              />
+            </div>
+            
+            <div style={{ marginBottom: '10px' }}>
+              <label style={{ display: 'block', marginBottom: '5px' }}>Reddit Client Secret:</label>
+              <input
+                type="password"
+                value={credentials.reddit_client_secret}
+                onChange={(e) => setCredentials({ ...credentials, reddit_client_secret: e.target.value })}
+                placeholder="Your Reddit app client secret"
+                style={{ width: '100%', padding: '8px', marginBottom: '10px' }}
+              />
+            </div>
+            
+            <div style={{ marginBottom: '10px' }}>
+              <label style={{ display: 'block', marginBottom: '5px' }}>Reddit Username:</label>
+              <input
+                type="text"
+                value={credentials.reddit_username}
+                onChange={(e) => setCredentials({ ...credentials, reddit_username: e.target.value })}
+                placeholder="Your Reddit username"
+                style={{ width: '100%', padding: '8px', marginBottom: '10px' }}
+              />
+            </div>
+            
+            <div style={{ marginBottom: '10px' }}>
+              <label style={{ display: 'block', marginBottom: '5px' }}>Reddit Password:</label>
+              <input
+                type="password"
+                value={credentials.reddit_password}
+                onChange={(e) => setCredentials({ ...credentials, reddit_password: e.target.value })}
+                placeholder="Your Reddit password (or app password if 2FA enabled)"
+                style={{ width: '100%', padding: '8px', marginBottom: '10px' }}
+              />
+            </div>
+            
+            <div style={{ marginBottom: '15px' }}>
+              <label style={{ display: 'block', marginBottom: '5px' }}>User Agent:</label>
+              <input
+                type="text"
+                value={credentials.reddit_user_agent}
+                onChange={(e) => setCredentials({ ...credentials, reddit_user_agent: e.target.value })}
+                style={{ width: '100%', padding: '8px', marginBottom: '10px' }}
+              />
+            </div>
+            
+            <button 
+              onClick={updateCredentials} 
+              disabled={credentialsUpdating}
+              style={{ 
+                padding: '10px 20px', 
+                background: '#007bff', 
+                color: 'white', 
+                border: 'none', 
+                borderRadius: '4px',
+                cursor: credentialsUpdating ? 'not-allowed' : 'pointer',
+                opacity: credentialsUpdating ? 0.6 : 1
+              }}
+            >
+              {credentialsUpdating ? 'Updating...' : 'Update & Restart Backend'}
+            </button>
+            
+            {credentialsResult && (
+              <div style={{ 
+                background: credentialsResult.error ? '#ffebee' : '#e8f5e8', 
+                padding: '10px', 
+                marginTop: '10px', 
+                borderRadius: '4px' 
+              }}>
+                {credentialsResult.error ? (
+                  <p style={{ color: 'red', margin: 0 }}>
+                    <strong>Error:</strong> {credentialsResult.error}
+                  </p>
+                ) : (
+                  <p style={{ color: 'green', margin: 0 }}>
+                    <strong>Success:</strong> {credentialsResult.message}
+                  </p>
+                )}
+              </div>
+            )}
+            
+            <div style={{ marginTop: '15px', fontSize: '0.9em', color: '#666' }}>
+              <p><strong>Note:</strong> You can get Reddit API credentials from <a href="https://www.reddit.com/prefs/apps" target="_blank">reddit.com/prefs/apps</a></p>
+              <p>Create a "script" type application and use the Client ID and Client Secret.</p>
+            </div>
           </div>
         )}
       </div>
