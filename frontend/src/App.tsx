@@ -21,6 +21,17 @@ function App() {
   })
   const [credentialsUpdating, setCredentialsUpdating] = useState(false)
   const [credentialsResult, setCredentialsResult] = useState<any>(null)
+  
+  // Queue Management state
+  const [queueStatus, setQueueStatus] = useState<any>(null)
+  const [queueStats, setQueueStats] = useState<any>(null)
+  const [showQueueDashboard, setShowQueueDashboard] = useState(false)
+  
+  // Agent Management state
+  const [agentPrompts, setAgentPrompts] = useState<any[]>([])
+  const [agentConfig, setAgentConfig] = useState<any>(null)
+  const [showAgentManager, setShowAgentManager] = useState(false)
+  const [editingPrompt, setEditingPrompt] = useState<any>(null)
 
   const checkHealth = async () => {
     try {
@@ -131,6 +142,92 @@ function App() {
       setCredentialsResult({ error: error.message })
     } finally {
       setCredentialsUpdating(false)
+    }
+  }
+
+  // Queue Management Functions
+  const getQueueStatus = async () => {
+    try {
+      const response = await fetch(`${API_BASE}/queue/status`)
+      const data = await response.json()
+      setQueueStatus(data)
+    } catch (error) {
+      console.error('Failed to get queue status:', error)
+    }
+  }
+
+  const getQueueStats = async () => {
+    try {
+      const response = await fetch(`${API_BASE}/queue/stats`)
+      const data = await response.json()
+      setQueueStats(data)
+    } catch (error) {
+      console.error('Failed to get queue stats:', error)
+    }
+  }
+
+  const pauseQueue = async (stage: string) => {
+    try {
+      const response = await fetch(`${API_BASE}/queue/pause/${stage}`, { method: 'POST' })
+      if (response.ok) {
+        getQueueStatus() // Refresh status
+        getQueueStats() // Refresh stats
+      }
+    } catch (error) {
+      console.error(`Failed to pause ${stage}:`, error)
+    }
+  }
+
+  const resumeQueue = async (stage: string) => {
+    try {
+      const response = await fetch(`${API_BASE}/queue/resume/${stage}`, { method: 'POST' })
+      if (response.ok) {
+        getQueueStatus() // Refresh status
+        getQueueStats() // Refresh stats
+      }
+    } catch (error) {
+      console.error(`Failed to resume ${stage}:`, error)
+    }
+  }
+
+  // Agent Management Functions
+  const getAgentPrompts = async () => {
+    try {
+      const response = await fetch(`${API_BASE}/agents/prompts`)
+      const data = await response.json()
+      setAgentPrompts(data.prompts || [])
+    } catch (error) {
+      console.error('Failed to get agent prompts:', error)
+    }
+  }
+
+  const getAgentConfig = async () => {
+    try {
+      const response = await fetch(`${API_BASE}/agents/config`)
+      const data = await response.json()
+      setAgentConfig(data)
+    } catch (error) {
+      console.error('Failed to get agent config:', error)
+    }
+  }
+
+  const updateAgentPrompt = async (stage: string, prompt: string) => {
+    try {
+      const response = await fetch(`${API_BASE}/agents/prompts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          agent_stage: stage,
+          system_prompt: prompt
+        })
+      })
+      
+      if (response.ok) {
+        getAgentPrompts() // Refresh prompts
+        setEditingPrompt(null)
+      }
+    } catch (error) {
+      console.error('Failed to update agent prompt:', error)
     }
   }
 
@@ -312,6 +409,198 @@ function App() {
               <p><strong>Note:</strong> You can get Reddit API credentials from <a href="https://www.reddit.com/prefs/apps" target="_blank">reddit.com/prefs/apps</a></p>
               <p>Create a "script" type application and use the Client ID and Client Secret.</p>
             </div>
+          </div>
+        )}
+      </div>
+
+      <div style={{ marginBottom: '20px' }}>
+        <h2>Queue Management Dashboard</h2>
+        <button 
+          onClick={() => {
+            setShowQueueDashboard(!showQueueDashboard)
+            if (!showQueueDashboard) {
+              getQueueStatus()
+              getQueueStats()
+            }
+          }}
+          style={{ padding: '8px 16px', marginBottom: '10px' }}
+        >
+          {showQueueDashboard ? 'Hide Queue Dashboard' : 'Show Queue Dashboard'}
+        </button>
+        
+        {showQueueDashboard && (
+          <div style={{ border: '1px solid #ddd', padding: '15px', borderRadius: '4px', background: '#f9f9f9' }}>
+            
+            {/* Queue Status */}
+            {queueStatus && (
+              <div style={{ marginBottom: '20px' }}>
+                <h3>Queue Status</h3>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '10px' }}>
+                  {Object.entries(queueStatus.endpoint_status || {}).map(([stage, status]: [string, any]) => (
+                    <div key={stage} style={{ 
+                      border: '1px solid #ccc', 
+                      padding: '10px', 
+                      borderRadius: '4px',
+                      background: status.available ? '#e8f5e8' : '#ffebee'
+                    }}>
+                      <h4>{stage.charAt(0).toUpperCase() + stage.slice(1)}</h4>
+                      <p>Status: {status.available ? '🟢 Online' : '🔴 Offline'}</p>
+                      <p>Load: {status.current_load}/{status.max_concurrent}</p>
+                      <div style={{ marginTop: '10px' }}>
+                        <button 
+                          onClick={() => pauseQueue(stage)}
+                          style={{ marginRight: '5px', padding: '5px 10px', background: '#ff6b6b', color: 'white', border: 'none', borderRadius: '3px' }}
+                        >
+                          Pause
+                        </button>
+                        <button 
+                          onClick={() => resumeQueue(stage)}
+                          style={{ padding: '5px 10px', background: '#51cf66', color: 'white', border: 'none', borderRadius: '3px' }}
+                        >
+                          Resume
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            
+            {/* Queue Statistics */}
+            {queueStats && (
+              <div style={{ marginBottom: '20px' }}>
+                <h3>Queue Statistics</h3>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '10px' }}>
+                  {queueStats.detailed_stats?.map((stat: any, index: number) => (
+                    <div key={index} style={{ border: '1px solid #ccc', padding: '10px', borderRadius: '4px' }}>
+                      <h4>{stat.stage} - {stat.status}</h4>
+                      <p>Count: {stat.count}</p>
+                      <p>Avg Retries: {stat.avg_retries?.toFixed(2) || 0}</p>
+                      {stat.oldest_post && <p>Oldest: {new Date(stat.oldest_post).toLocaleString()}</p>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            
+            <button 
+              onClick={() => { getQueueStatus(); getQueueStats(); }}
+              style={{ padding: '10px 20px', background: '#007bff', color: 'white', border: 'none', borderRadius: '4px' }}
+            >
+              Refresh Dashboard
+            </button>
+          </div>
+        )}
+      </div>
+
+      <div style={{ marginBottom: '20px' }}>
+        <h2>Agent Management</h2>
+        <button 
+          onClick={() => {
+            setShowAgentManager(!showAgentManager)
+            if (!showAgentManager) {
+              getAgentPrompts()
+              getAgentConfig()
+            }
+          }}
+          style={{ padding: '8px 16px', marginBottom: '10px' }}
+        >
+          {showAgentManager ? 'Hide Agent Manager' : 'Show Agent Manager'}
+        </button>
+        
+        {showAgentManager && (
+          <div style={{ border: '1px solid #ddd', padding: '15px', borderRadius: '4px', background: '#f9f9f9' }}>
+            
+            {/* Agent Configuration Overview */}
+            {agentConfig && (
+              <div style={{ marginBottom: '20px' }}>
+                <h3>Agent Configuration</h3>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '10px' }}>
+                  {Object.entries(agentConfig.config || {}).map(([stage, config]: [string, any]) => (
+                    <div key={stage} style={{ border: '1px solid #ccc', padding: '10px', borderRadius: '4px', background: 'white' }}>
+                      <h4>{stage.charAt(0).toUpperCase() + stage.slice(1)}</h4>
+                      <p><strong>Model:</strong> {config.model}</p>
+                      <p><strong>Endpoint:</strong> {config.endpoint}</p>
+                      <p><strong>Max Concurrent:</strong> {config.max_concurrent}</p>
+                      <p><strong>Description:</strong> {config.description}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            
+            {/* System Prompts Management */}
+            <div style={{ marginBottom: '20px' }}>
+              <h3>System Prompts</h3>
+              {agentPrompts.map((prompt: any) => (
+                <div key={prompt.agent_stage} style={{ 
+                  border: '1px solid #ccc', 
+                  padding: '15px', 
+                  marginBottom: '10px',
+                  borderRadius: '4px',
+                  background: 'white'
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+                    <h4>{prompt.agent_stage.charAt(0).toUpperCase() + prompt.agent_stage.slice(1)} Agent</h4>
+                    <div>
+                      <span style={{ marginRight: '10px', fontSize: '0.9em', color: '#666' }}>
+                        v{prompt.version} • {new Date(prompt.updated_at).toLocaleDateString()}
+                      </span>
+                      <button 
+                        onClick={() => setEditingPrompt(prompt)}
+                        style={{ padding: '5px 10px', background: '#007bff', color: 'white', border: 'none', borderRadius: '3px' }}
+                      >
+                        Edit
+                      </button>
+                    </div>
+                  </div>
+                  
+                  {editingPrompt?.agent_stage === prompt.agent_stage ? (
+                    <div>
+                      <textarea
+                        value={editingPrompt.system_prompt}
+                        onChange={(e) => setEditingPrompt({...editingPrompt, system_prompt: e.target.value})}
+                        style={{ width: '100%', height: '150px', padding: '10px', marginBottom: '10px' }}
+                        placeholder="Enter system prompt for this agent..."
+                      />
+                      <div>
+                        <button 
+                          onClick={() => updateAgentPrompt(editingPrompt.agent_stage, editingPrompt.system_prompt)}
+                          style={{ padding: '8px 16px', background: '#28a745', color: 'white', border: 'none', borderRadius: '3px', marginRight: '10px' }}
+                        >
+                          Save
+                        </button>
+                        <button 
+                          onClick={() => setEditingPrompt(null)}
+                          style={{ padding: '8px 16px', background: '#6c757d', color: 'white', border: 'none', borderRadius: '3px' }}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={{ 
+                      background: '#f8f9fa', 
+                      padding: '10px', 
+                      borderRadius: '3px',
+                      fontFamily: 'monospace',
+                      fontSize: '0.9em',
+                      maxHeight: '100px',
+                      overflow: 'auto'
+                    }}>
+                      {prompt.system_prompt || 'No system prompt configured'}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+            
+            <button 
+              onClick={() => { getAgentPrompts(); getAgentConfig(); }}
+              style={{ padding: '10px 20px', background: '#007bff', color: 'white', border: 'none', borderRadius: '4px' }}
+            >
+              Refresh Agent Data
+            </button>
           </div>
         )}
       </div>

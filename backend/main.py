@@ -5,8 +5,31 @@ from datetime import datetime, timedelta, timezone
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from contextlib import asynccontextmanager
 
-app = FastAPI(title="Reddit Claim Verifier", version="1.0.0")
+# Import queue management system
+import sys
+from pathlib import Path
+
+# Add current directory to path for imports
+current_dir = Path(__file__).parent
+if str(current_dir) not in sys.path:
+    sys.path.append(str(current_dir))
+
+from queue_management.queue_manager import start_queue_manager, stop_queue_manager, get_queue_status
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """FastAPI lifespan context manager"""
+    # Startup
+    print("Starting Reddit Claim Verifier with Queue Management...")
+    await start_queue_manager()
+    yield
+    # Shutdown
+    print("Shutting down Queue Management...")
+    await stop_queue_manager()
+
+app = FastAPI(title="Reddit Claim Verifier", version="1.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -60,9 +83,10 @@ def get_db_connection():
 
 @app.on_event("startup")
 def startup():
-    # Create tables
+    # Create tables with queue management columns
     conn = get_db_connection()
     with conn.cursor() as cur:
+        # Enhanced posts table with queue management columns
         cur.execute("""
             CREATE TABLE IF NOT EXISTS posts (
                 id SERIAL PRIMARY KEY,
@@ -72,9 +96,81 @@ def startup():
                 created_utc TIMESTAMPTZ,
                 url TEXT,
                 body TEXT,
-                inserted_at TIMESTAMPTZ DEFAULT NOW()
+                inserted_at TIMESTAMPTZ DEFAULT NOW(),
+                -- Queue management columns
+                queue_stage VARCHAR(20) DEFAULT 'triage',
+                queue_status VARCHAR(20) DEFAULT 'pending',
+                assigned_to VARCHAR(50) NULL,
+                assigned_at TIMESTAMPTZ NULL,
+                processed_at TIMESTAMPTZ NULL,
+                retry_count INTEGER DEFAULT 0,
+                metadata JSONB DEFAULT '{}'
             )
         """)
+        
+        # Queue results table
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS queue_results (
+                id SERIAL PRIMARY KEY,
+                post_id INTEGER REFERENCES posts(id),
+                stage VARCHAR(20) NOT NULL,
+                result JSONB NOT NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+        
+        # LLM endpoints tracking table
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS llm_endpoints (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(50) UNIQUE NOT NULL,
+                url VARCHAR(200) NOT NULL,
+                capabilities JSONB NOT NULL,
+                max_concurrent INTEGER DEFAULT 1,
+                current_load INTEGER DEFAULT 0
+            )
+        """)
+        
+        # Agent system prompts management table  
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS agent_prompts (
+                id SERIAL PRIMARY KEY,
+                agent_stage VARCHAR(20) UNIQUE NOT NULL,
+                system_prompt TEXT NOT NULL,
+                version INTEGER DEFAULT 1,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+        
+        # Queue state management table
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS queue_state (
+                id SERIAL PRIMARY KEY,
+                stage VARCHAR(20) UNIQUE NOT NULL,
+                is_paused BOOLEAN DEFAULT FALSE,
+                max_concurrent INTEGER DEFAULT 1,
+                poll_interval INTEGER DEFAULT 30,
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+        
+        # Add indexes for queue performance
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_posts_queue_stage_status 
+            ON posts (queue_stage, queue_status)
+        """)
+        
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_posts_assigned_at 
+            ON posts (assigned_at) WHERE assigned_at IS NOT NULL
+        """)
+        
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_queue_results_post_stage 
+            ON queue_results (post_id, stage)
+        """)
+        
         conn.commit()
     conn.close()
 
@@ -145,13 +241,50 @@ def scan_subreddit(request: ScanRequest):
                 
             found_posts += 1
             
+            # Collect comprehensive post text
+            post_body = ""
+            
+            # Get main post text
+            if hasattr(submission, 'selftext') and submission.selftext:
+                post_body += f"Post Content:\n{submission.selftext}\n\n"
+            
+            # Get top comments for context (limit to avoid too much data)
+            try:
+                submission.comments.replace_more(limit=0)  # Remove "load more comments"
+                top_comments = []
+                for comment in submission.comments.list()[:10]:  # Top 10 comments
+                    if hasattr(comment, 'body') and comment.body != '[deleted]':
+                        author = str(comment.author) if comment.author else "[deleted]"
+                        top_comments.append(f"Comment by u/{author}: {comment.body}")
+                
+                if top_comments:
+                    post_body += "Top Comments:\n" + "\n".join(top_comments) + "\n\n"
+                    
+            except Exception as e:
+                print(f"Could not fetch comments for {submission.id}: {e}")
+            
+            # For link posts, note the URL
+            if submission.url != submission.permalink:
+                post_body += f"External Link: {submission.url}\n\n"
+            
+            # Add post metadata for context
+            post_body += f"Post Metadata:\n"
+            post_body += f"Score: {submission.score}\n"
+            post_body += f"Upvote ratio: {getattr(submission, 'upvote_ratio', 'N/A')}\n"
+            post_body += f"Number of comments: {submission.num_comments}\n"
+            post_body += f"Post type: {'Self post' if submission.is_self else 'Link post'}\n"
+            
+            # Truncate if too long (keep within reasonable limits)
+            if len(post_body) > 10000:
+                post_body = post_body[:10000] + "\n\n[Content truncated...]"
+            
             # Save to database
             conn = get_db_connection()
             try:
                 with conn.cursor() as cur:
                     cur.execute("""
-                        INSERT INTO posts (reddit_id, title, author, created_utc, url, body) 
-                        VALUES (%s, %s, %s, %s, %s, %s)
+                        INSERT INTO posts (reddit_id, title, author, created_utc, url, body, queue_stage, queue_status) 
+                        VALUES (%s, %s, %s, %s, %s, %s, 'triage', 'pending')
                         ON CONFLICT (reddit_id) DO NOTHING
                         RETURNING id
                     """, (
@@ -160,7 +293,7 @@ def scan_subreddit(request: ScanRequest):
                         str(submission.author) if submission.author else "[deleted]",
                         datetime.fromtimestamp(submission.created_utc, tz=timezone.utc),
                         submission.url,
-                        submission.selftext if hasattr(submission, 'selftext') else ""
+                        post_body
                     ))
                     
                     if cur.fetchone():
@@ -192,6 +325,223 @@ def scan_subreddit(request: ScanRequest):
         if "401" in str(e):
             raise HTTPException(status_code=401, detail=str(e))
         raise HTTPException(status_code=500, detail=f"Scan failed: {str(e)}")
+
+
+# Queue Management API Endpoints
+
+@app.get("/queue/status")
+async def queue_status():
+    """Get current queue processing status"""
+    try:
+        status = await get_queue_status()
+        return status
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get queue status: {str(e)}")
+
+
+@app.get("/queue/stats")
+async def queue_stats():
+    """Get detailed queue statistics"""
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            # Get detailed stats by stage and status
+            cur.execute("""
+                SELECT 
+                    queue_stage,
+                    queue_status,
+                    COUNT(*) as count,
+                    AVG(retry_count) as avg_retries,
+                    MIN(created_utc) as oldest_post,
+                    MAX(created_utc) as newest_post
+                FROM posts 
+                WHERE queue_stage IN ('triage', 'research', 'response', 'editorial', 'post_queue', 'completed', 'rejected')
+                GROUP BY queue_stage, queue_status
+                ORDER BY queue_stage, queue_status
+            """)
+            
+            detailed_stats = []
+            for row in cur.fetchall():
+                detailed_stats.append({
+                    "stage": row[0],
+                    "status": row[1], 
+                    "count": row[2],
+                    "avg_retries": float(row[3]) if row[3] else 0,
+                    "oldest_post": row[4].isoformat() if row[4] else None,
+                    "newest_post": row[5].isoformat() if row[5] else None
+                })
+            
+            # Get processing history
+            cur.execute("""
+                SELECT stage, COUNT(*) as total_processed
+                FROM queue_results
+                GROUP BY stage
+                ORDER BY stage
+            """)
+            
+            processing_history = {}
+            for stage, count in cur.fetchall():
+                processing_history[stage] = count
+        
+        conn.close()
+        
+        return {
+            "detailed_stats": detailed_stats,
+            "processing_history": processing_history,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get queue stats: {str(e)}")
+
+
+@app.post("/queue/pause/{stage}")
+async def pause_queue(stage: str):
+    """Pause processing for a specific queue stage"""
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO queue_state (stage, is_paused, updated_at)
+                VALUES (%s, TRUE, NOW())
+                ON CONFLICT (stage) DO UPDATE SET 
+                    is_paused = TRUE,
+                    updated_at = NOW()
+                RETURNING stage, is_paused
+            """, (stage,))
+            
+            result = cur.fetchone()
+            conn.commit()
+        conn.close()
+        
+        return {
+            "stage": result[0],
+            "is_paused": result[1],
+            "message": f"Queue stage '{stage}' has been paused"
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to pause queue: {str(e)}")
+
+
+@app.post("/queue/resume/{stage}")
+async def resume_queue(stage: str):
+    """Resume processing for a specific queue stage"""
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO queue_state (stage, is_paused, updated_at)
+                VALUES (%s, FALSE, NOW())
+                ON CONFLICT (stage) DO UPDATE SET 
+                    is_paused = FALSE,
+                    updated_at = NOW()
+                RETURNING stage, is_paused
+            """, (stage,))
+            
+            result = cur.fetchone()
+            conn.commit()
+        conn.close()
+        
+        return {
+            "stage": result[0],
+            "is_paused": result[1],
+            "message": f"Queue stage '{stage}' has been resumed"
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to resume queue: {str(e)}")
+
+
+# Agent System Prompt Management
+
+class SystemPromptUpdate(BaseModel):
+    agent_stage: str
+    system_prompt: str
+
+@app.get("/agents/prompts")
+async def get_agent_prompts():
+    """Get all agent system prompts"""
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT agent_stage, system_prompt, version, updated_at
+                FROM agent_prompts
+                ORDER BY agent_stage
+            """)
+            
+            prompts = []
+            for row in cur.fetchall():
+                prompts.append({
+                    "agent_stage": row[0],
+                    "system_prompt": row[1],
+                    "version": row[2],
+                    "updated_at": row[3].isoformat() if row[3] else None
+                })
+        conn.close()
+        
+        return {"prompts": prompts}
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get agent prompts: {str(e)}")
+
+
+@app.post("/agents/prompts")
+async def update_agent_prompt(prompt_data: SystemPromptUpdate):
+    """Update system prompt for a specific agent"""
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            # Check if prompt exists
+            cur.execute("""
+                SELECT version FROM agent_prompts WHERE agent_stage = %s
+            """, (prompt_data.agent_stage,))
+            
+            result = cur.fetchone()
+            current_version = result[0] if result else 0
+            
+            # Insert or update prompt
+            cur.execute("""
+                INSERT INTO agent_prompts (agent_stage, system_prompt, version, updated_at)
+                VALUES (%s, %s, %s, NOW())
+                ON CONFLICT (agent_stage) DO UPDATE SET 
+                    system_prompt = EXCLUDED.system_prompt,
+                    version = agent_prompts.version + 1,
+                    updated_at = NOW()
+                RETURNING agent_stage, version
+            """, (prompt_data.agent_stage, prompt_data.system_prompt, current_version + 1))
+            
+            result = cur.fetchone()
+            conn.commit()
+        conn.close()
+        
+        return {
+            "agent_stage": result[0],
+            "version": result[1],
+            "message": f"System prompt updated for {result[0]} agent"
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update agent prompt: {str(e)}")
+
+
+@app.get("/agents/config")
+async def get_agent_config():
+    """Get configuration for all agents"""
+    try:
+        # Import here to avoid circular imports
+        from agents.agent_config import AGENT_CONFIG, get_agent_summary
+        
+        summary = get_agent_summary()
+        return {
+            "config": AGENT_CONFIG,
+            "summary": summary
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get agent config: {str(e)}")
+
 
 # Pydantic model for credentials update
 class CredentialsUpdate(BaseModel):

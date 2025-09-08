@@ -2,11 +2,21 @@
 Database Write Tool for Content Generation Agents
 Allows LLM agents to write their results back to the queue database
 """
+import os
 import json
 import psycopg
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional
-from ..main import get_db_connection
+
+def get_db_connection():
+    """Get database connection - duplicated to avoid circular imports"""
+    return psycopg.connect(
+        host=os.getenv("DB_HOST", "localhost"),
+        port=os.getenv("DB_PORT", "5432"),
+        dbname=os.getenv("DB_NAME", "redditmon"),
+        user=os.getenv("DB_USER", "redditmon"),
+        password=os.getenv("DB_PASSWORD", "supersecret")
+    )
 
 
 class DatabaseWriteTool:

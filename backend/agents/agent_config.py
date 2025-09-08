@@ -3,7 +3,7 @@ Agent Configuration and Factory
 Centralized configuration for all LLM agents
 """
 import os
-from typing import Dict, Any, Type
+from typing import Dict, Any, Type, List
 from .base_agent import BaseAgent, MockAgent
 from .triage_agent import TriageAgent
 from .research_agent import ResearchAgent

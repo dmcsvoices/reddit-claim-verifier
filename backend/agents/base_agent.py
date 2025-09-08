@@ -3,10 +3,18 @@ Base Agent class for LLM agents with Ollama tool support
 """
 import json
 import httpx
+import sys
 from abc import ABC, abstractmethod
 from typing import Dict, Any, List, Optional
-from ..tools.database_write import DatabaseWriteTool
-from ..tools.brave_search import BraveSearchTool
+from pathlib import Path
+
+# Add backend directory to Python path for absolute imports
+backend_dir = Path(__file__).parent.parent
+if str(backend_dir) not in sys.path:
+    sys.path.append(str(backend_dir))
+
+from tools.database_write import DatabaseWriteTool
+from tools.brave_search import BraveSearchTool
 
 
 class BaseAgent(ABC):

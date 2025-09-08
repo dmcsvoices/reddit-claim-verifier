@@ -10,8 +10,16 @@ from typing import Dict, List, Optional, Any
 import psycopg
 from contextlib import asynccontextmanager
 
-from ..agents.agent_config import AgentFactory, AGENT_CONFIG, agent_metrics
-from ..tools.database_write import get_latest_result, get_post_processing_history
+import sys
+from pathlib import Path
+
+# Add backend directory to Python path for imports
+backend_dir = Path(__file__).parent.parent
+if str(backend_dir) not in sys.path:
+    sys.path.append(str(backend_dir))
+
+from agents.agent_config import AgentFactory, AGENT_CONFIG, agent_metrics
+from tools.database_write import get_latest_result, get_post_processing_history
 
 
 # Configuration

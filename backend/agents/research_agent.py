@@ -2,10 +2,18 @@
 Research Agent - Researches factual claims using web search
 """
 import json
+import sys
 from typing import Dict, Any, List
-from .base_agent import BaseAgent
-from ..tools.database_write import DatabaseWriteTool
-from ..tools.brave_search import BraveSearchTool
+from pathlib import Path
+
+# Add backend directory to Python path for absolute imports
+backend_dir = Path(__file__).parent.parent
+if str(backend_dir) not in sys.path:
+    sys.path.append(str(backend_dir))
+
+from agents.base_agent import BaseAgent
+from tools.database_write import DatabaseWriteTool
+from tools.brave_search import BraveSearchTool
 
 
 class ResearchAgent(BaseAgent):
