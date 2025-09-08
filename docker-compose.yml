@@ -1,0 +1,59 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:16
+    container_name: reddit-monitor-db
+    environment:
+      POSTGRES_DB: ${DB_NAME:-redditmon}
+      POSTGRES_USER: ${DB_USER:-redditmon}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-supersecret}
+    ports:
+      - "5443:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U redditmon -d redditmon"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build: ./backend
+    container_name: reddit-monitor-backend
+    environment:
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_NAME=${DB_NAME:-redditmon}
+      - DB_USER=${DB_USER:-redditmon}
+      - DB_PASSWORD=${DB_PASSWORD:-supersecret}
+      - REDDIT_CLIENT_ID=${REDDIT_CLIENT_ID}
+      - REDDIT_CLIENT_SECRET=${REDDIT_CLIENT_SECRET}
+      - REDDIT_USERNAME=${REDDIT_USERNAME}
+      - REDDIT_PASSWORD=${REDDIT_PASSWORD}
+      - REDDIT_USER_AGENT=${REDDIT_USER_AGENT:-reddit-monitor-bot/1.0}
+      - BRAVE_API_KEY=${BRAVE_API_KEY}
+      - TRIAGE_ENDPOINT=${TRIAGE_ENDPOINT:-http://localhost:8001}
+      - RESEARCH_ENDPOINT=${RESEARCH_ENDPOINT:-http://localhost:8002}
+      - RESPONSE_ENDPOINT=${RESPONSE_ENDPOINT:-http://localhost:8002}
+      - EDITORIAL_ENDPOINT=${EDITORIAL_ENDPOINT:-http://localhost:8001}
+    ports:
+      - "5151:5151"
+    volumes:
+      - ./secret:/app/secret:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "5151"]
+
+  frontend:
+    build: ./frontend
+    container_name: reddit-monitor-frontend
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+    command: ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "5173"]
+
+volumes:
+  postgres_data:
