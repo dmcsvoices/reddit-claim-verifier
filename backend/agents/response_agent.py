@@ -13,20 +13,34 @@ if str(backend_dir) not in sys.path:
 
 from agents.base_agent import BaseAgent
 from tools.database_write import DatabaseWriteTool
+from tools.time_source import TimeSourceTool
 
 
 class ResponseAgent(BaseAgent):
     def get_tools(self) -> List[Dict[str, Any]]:
-        """Response agent only needs database write tool"""
-        return [DatabaseWriteTool.get_tool_definition()]
+        """Response agent needs time and database write tools"""
+        return [
+            TimeSourceTool.get_tool_definition(),
+            DatabaseWriteTool.get_tool_definition()
+        ]
     
-    def get_system_prompt(self) -> str:
+    def get_default_system_prompt(self) -> str:
         return """You are a response generation agent that creates helpful, fact-based replies to Reddit posts.
 
-Your job is to:
-1. Review the original post and research findings
-2. Generate a respectful, educational response 
-3. Address any misinformation with factual corrections
+CRITICAL INSTRUCTION: ALWAYS start your work by calling get_current_time to get the current date and time. This is mandatory before generating any response.
+
+Your workflow MUST be:
+1. FIRST: Call get_current_time (timezone="UTC", format="human") to establish temporal context
+2. THEN: Review the original post and research findings
+3. Generate a respectful, educational response with current temporal awareness
+4. Address any misinformation with factual corrections using current date context
+5. Ensure all time references are accurate to the current date
+
+Use the current date/time to:
+- Ensure any time references in your response are current and accurate
+- Avoid rejecting content due to perceived date inconsistencies
+- Include appropriate temporal context when relevant to the discussion
+- Frame information relative to the current date (e.g., "As of [current date]...")
 4. Cite credible sources for all claims
 5. Maintain a helpful, non-confrontational tone
 
@@ -55,22 +69,30 @@ Tone Examples:
 Use write_to_database to save your response draft with next_stage="editorial"."""
     
     def build_messages(self, post_data: Dict[str, Any], context: Dict[str, Any] = None) -> List[Dict[str, str]]:
+        # Extract post info
+        title = post_data.get('title', 'No title')
+        body = post_data.get('body', 'No content')
+        author = post_data.get('author', 'unknown')
+        post_id = post_data.get('id', 0)
+        
         # Get research results from context
         research_result = context.get('research_result', {}) if context else {}
-        research_content = research_result.get('content', {})
+        research_content = research_result.get('content', {}) if isinstance(research_result, dict) else {}
         
-        findings = research_content.get('findings', 'No research findings available')
+        result = research_content.get('result', 'No research findings available')
         sources = research_content.get('sources', [])
         fact_check_status = research_content.get('fact_check_status', 'unverified')
+        confidence = research_content.get('confidence', 0.5)
+        reasoning = research_content.get('reasoning', 'No research reasoning provided')
         
         # Format sources for easy reference
         source_list = []
         for i, source in enumerate(sources[:10], 1):  # Limit to top 10 sources
             if isinstance(source, dict):
-                title = source.get('title', f'Source {i}')
+                title_src = source.get('title', f'Source {i}')
                 url = source.get('url', '')
                 credibility = source.get('credibility', 'unknown')
-                source_list.append(f"{i}. [{title}]({url}) - {credibility} credibility")
+                source_list.append(f"{i}. [{title_src}]({url}) - {credibility} credibility")
             else:
                 source_list.append(f"{i}. {source}")
         
@@ -83,14 +105,16 @@ Use write_to_database to save your response draft with next_stage="editorial".""
                 "content": f"""Generate a helpful response to this Reddit post based on research findings:
 
 **ORIGINAL POST:**
-Title: "{post_data['title']}"
-Content: {post_data.get('body', 'No content')}
-Author: u/{post_data.get('author', 'unknown')}
-Subreddit: r/{post_data.get('subreddit', 'unknown')}
+Post ID: {post_id}
+Title: "{title}"
+Content: {body}
+Author: u/{author}
 
 **RESEARCH FINDINGS:**
 Fact-check Status: {fact_check_status}
-Summary: {findings}
+Confidence: {confidence}
+Research Summary: {result}
+Reasoning: {reasoning}
 
 **AVAILABLE SOURCES:**
 {formatted_sources}
@@ -105,7 +129,14 @@ Write a helpful Reddit comment that:
 6. Follows Reddit formatting conventions
 
 The response should be informative but not preachy, helpful but not condescending.
-Use write_to_database to save your response draft."""
+
+Use write_to_database with:
+- post_id: {post_id}
+- stage: "response"
+- content: your draft response with confidence score
+- next_stage: "editorial"
+
+Generate the response now."""
             }
         ]
     

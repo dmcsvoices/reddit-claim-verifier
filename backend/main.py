@@ -6,6 +6,10 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv("../.env")
 
 # Import queue management system
 import sys
@@ -16,7 +20,7 @@ current_dir = Path(__file__).parent
 if str(current_dir) not in sys.path:
     sys.path.append(str(current_dir))
 
-from queue_management.queue_manager import start_queue_manager, stop_queue_manager, get_queue_status
+from queue_management.queue_manager import start_queue_manager, stop_queue_manager, get_queue_status, reload_queue_agent_configs
 
 async def setup_database_schema():
     """Setup database schema for queue management"""
@@ -72,6 +76,20 @@ async def setup_database_schema():
                     error_message TEXT,
                     processing_time REAL,
                     created_at TIMESTAMP DEFAULT NOW()
+                );
+            """)
+            
+            # Create agent_config table for UI selections
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS agent_config (
+                    id SERIAL PRIMARY KEY,
+                    agent_stage VARCHAR(50) UNIQUE NOT NULL,
+                    model VARCHAR(100) NOT NULL,
+                    endpoint VARCHAR(200) NOT NULL,
+                    timeout INTEGER DEFAULT 120,
+                    max_concurrent INTEGER DEFAULT 2,
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    updated_at TIMESTAMP DEFAULT NOW()
                 );
             """)
             
@@ -148,7 +166,7 @@ def get_reddit_client():
 def get_db_connection():
     return psycopg.connect(
         host=os.getenv("DB_HOST", "localhost"),
-        port=os.getenv("DB_PORT", "5432"),
+        port=os.getenv("DB_PORT", "5443"),
         dbname=os.getenv("DB_NAME", "redditmon"),
         user=os.getenv("DB_USER", "redditmon"),
         password=os.getenv("DB_PASSWORD", "supersecret")
@@ -526,6 +544,20 @@ async def resume_queue(stage: str):
         raise HTTPException(status_code=500, detail=f"Failed to resume queue: {str(e)}")
 
 
+@app.post("/queue/reload-agents")
+async def reload_agent_configurations():
+    """Reload agent configurations from database"""
+    try:
+        await reload_queue_agent_configs()
+        return {
+            "success": True,
+            "message": "Agent configurations reloaded successfully"
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to reload agent configurations: {str(e)}")
+
+
 # Agent System Prompt Management
 
 class SystemPromptUpdate(BaseModel):
@@ -599,37 +631,155 @@ async def update_agent_prompt(prompt_data: SystemPromptUpdate):
         raise HTTPException(status_code=500, detail=f"Failed to update agent prompt: {str(e)}")
 
 
-@app.get("/agents/config")
-async def get_agent_config():
-    """Get configuration for all agents"""
+@app.post("/agents/prompts/sync")
+async def sync_agent_prompts():
+    """Sync database agent_prompts with latest default prompts from agent classes"""
     try:
-        # Import here to avoid circular imports
-        from agents.agent_config import AGENT_CONFIG, get_agent_summary
+        from agents.triage_agent import TriageAgent
+        from agents.research_agent import ResearchAgent
+        from agents.response_agent import ResponseAgent
+        from agents.editorial_agent import EditorialAgent
         
-        # Create JSON-serializable version of config without class objects
-        serializable_config = {}
-        for stage, config in AGENT_CONFIG.items():
-            serializable_config[stage] = {
-                "model": config["model"],
-                "endpoint": config["endpoint"],
-                "timeout": config["timeout"],
-                "max_concurrent": config["max_concurrent"],
-                "description": config["description"],
-                "cost_per_token": config["cost_per_token"],
-                "class_name": config["class"].__name__ if hasattr(config["class"], "__name__") else str(config["class"])
-            }
-        
-        summary = get_agent_summary()
-        return {
-            "config": serializable_config,
-            "summary": summary
+        agents = {
+            'triage': TriageAgent("sync-model", "http://localhost:11434"),
+            'research': ResearchAgent("sync-model", "http://localhost:11434"),
+            'response': ResponseAgent("sync-model", "http://localhost:11434"),
+            'editorial': EditorialAgent("sync-model", "http://localhost:11434")
         }
         
+        conn = get_db_connection()
+        synced_agents = []
+        
+        with conn.cursor() as cur:
+            for stage, agent in agents.items():
+                # Get the latest default prompt from the agent class
+                latest_prompt = agent.get_default_system_prompt()
+                
+                # Check if this prompt already exists in database
+                cur.execute("""
+                    SELECT system_prompt, version FROM agent_prompts 
+                    WHERE agent_stage = %s 
+                    ORDER BY version DESC LIMIT 1
+                """, (stage,))
+                
+                result = cur.fetchone()
+                current_prompt = result[0] if result else None
+                current_version = result[1] if result else 0
+                
+                if current_prompt != latest_prompt:
+                    # Update database with latest prompt
+                    new_version = current_version + 1
+                    cur.execute("""
+                        INSERT INTO agent_prompts (agent_stage, system_prompt, version, is_active, updated_at)
+                        VALUES (%s, %s, %s, true, NOW())
+                        ON CONFLICT (agent_stage) DO UPDATE SET 
+                            system_prompt = EXCLUDED.system_prompt,
+                            version = agent_prompts.version + 1,
+                            updated_at = NOW(),
+                            is_active = true
+                    """, (stage, latest_prompt, new_version))
+                    
+                    synced_agents.append({
+                        "stage": stage,
+                        "old_version": current_version,
+                        "new_version": new_version,
+                        "has_time_instructions": "CRITICAL INSTRUCTION" in latest_prompt
+                    })
+                    
+        conn.commit()
+        conn.close()
+        
+        return {
+            "success": True,
+            "message": f"Synced {len(synced_agents)} agent prompts with latest defaults",
+            "synced_agents": synced_agents,
+            "total_agents": len(agents)
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to sync agent prompts: {str(e)}")
+
+
+@app.get("/agents/config")
+async def get_agent_config():
+    """Get configuration for all agents from database with fallback to defaults"""
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            cur.execute("SELECT agent_stage, model, endpoint, timeout, max_concurrent FROM agent_config")
+            rows = cur.fetchall()
+            
+            # Convert to dict with agent_stage as key
+            db_config = {}
+            for row in rows:
+                stage, model, endpoint, timeout, max_concurrent = row
+                db_config[stage] = {
+                    "model": model,
+                    "endpoint": endpoint,
+                    "timeout": timeout,
+                    "max_concurrent": max_concurrent
+                }
+            
+            # Always load defaults and merge with database values
+            from agents.agent_config import AGENT_CONFIG
+            merged_config = {}
+            for stage, config in AGENT_CONFIG.items():
+                # Use database config if available, otherwise use defaults
+                if stage in db_config:
+                    merged_config[stage] = db_config[stage]
+                else:
+                    merged_config[stage] = {
+                        "model": config["model"],
+                        "endpoint": config["endpoint"],
+                        "timeout": config["timeout"],
+                        "max_concurrent": config["max_concurrent"]
+                    }
+            
+            return {"config": merged_config}
+            
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get agent config: {str(e)}")
 
 
-# Pydantic model for credentials update
+class AgentConfigUpdate(BaseModel):
+    agent_stage: str
+    model: str
+    endpoint: str
+    timeout: int = 120
+    max_concurrent: int = 2
+
+
+@app.post("/agents/config")
+async def save_agent_config(config_update: AgentConfigUpdate):
+    """Save agent configuration to database"""
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO agent_config (agent_stage, model, endpoint, timeout, max_concurrent, updated_at)
+                VALUES (%s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (agent_stage)
+                DO UPDATE SET
+                    model = EXCLUDED.model,
+                    endpoint = EXCLUDED.endpoint,
+                    timeout = EXCLUDED.timeout,
+                    max_concurrent = EXCLUDED.max_concurrent,
+                    updated_at = NOW()
+            """, (
+                config_update.agent_stage,
+                config_update.model, 
+                config_update.endpoint,
+                config_update.timeout,
+                config_update.max_concurrent
+            ))
+        conn.commit()
+        return {"success": True, "message": f"Agent config for {config_update.agent_stage} saved successfully"}
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save agent config: {str(e)}")
+
+
+# Pydantic models
 class CredentialsUpdate(BaseModel):
     reddit_client_id: str
     reddit_client_secret: str
@@ -637,11 +787,15 @@ class CredentialsUpdate(BaseModel):
     reddit_password: str
     reddit_user_agent: str = "reddit-claim-verifier/1.0"
 
+
 @app.post("/update-credentials")
 def update_credentials(credentials: CredentialsUpdate):
     try:
-        # Read current .env file
-        env_path = "/app/.env"  # Mounted .env file
+        # Read current .env file - detect native vs Docker environment
+        if os.path.exists("/app/.env"):
+            env_path = "/app/.env"  # Docker environment
+        else:
+            env_path = "../.env"    # Native development (relative to backend directory)
         env_lines = []
         
         # Read existing .env file
@@ -653,7 +807,7 @@ def update_credentials(credentials: CredentialsUpdate):
             env_lines = [
                 "# Database Configuration\n",
                 "DB_HOST=db\n",
-                "DB_PORT=5432\n", 
+                "DB_PORT=5443\n", 
                 "DB_NAME=redditmon\n",
                 "DB_USER=redditmon\n",
                 "DB_PASSWORD=supersecret\n",

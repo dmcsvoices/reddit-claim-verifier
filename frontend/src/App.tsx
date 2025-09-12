@@ -29,6 +29,7 @@ function App() {
   // Queue Management state
   const [queueStatus, setQueueStatus] = useState<any>(null)
   const [queueStats, setQueueStats] = useState<any>(null)
+  const [queueStates, setQueueStates] = useState<{[key: string]: boolean}>({})
   
   // Agent Backend state  
   const [availableModels, setAvailableModels] = useState<{[key: string]: string[]}>({}) 
@@ -41,33 +42,69 @@ function App() {
   const [currentEndpoints, setCurrentEndpoints] = useState<{[key: string]: string}>({}) // Track current endpoint values per stage
   const [currentModels, setCurrentModels] = useState<{[key: string]: string}>({}) // Track current model selections per stage
 
-  // LocalStorage persistence helpers
-  const saveAgentSettings = () => {
-    const settings = {
-      endpoints: currentEndpoints,
-      models: currentModels,
-      savedAt: new Date().toISOString()
-    }
-    localStorage.setItem('reddit-monitor-agent-settings', JSON.stringify(settings))
-    console.log('💾 Saved agent settings to localStorage:', settings)
-  }
-
-  const loadAgentSettings = () => {
+  // Database persistence helpers
+  const saveAgentSettings = async () => {
     try {
-      const saved = localStorage.getItem('reddit-monitor-agent-settings')
-      if (saved) {
-        const settings = JSON.parse(saved)
-        console.log('🔄 Loaded agent settings from localStorage:', settings)
-        if (settings.endpoints) {
-          setCurrentEndpoints(settings.endpoints)
+      // Save each agent configuration to database
+      for (const stage of Object.keys(currentEndpoints)) {
+        if (currentModels[stage] && currentEndpoints[stage]) {
+          await fetch(`${API_BASE}/agents/config`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              agent_stage: stage,
+              model: currentModels[stage],
+              endpoint: currentEndpoints[stage],
+              timeout: 120,
+              max_concurrent: 2
+            })
+          })
         }
-        if (settings.models) {
-          setCurrentModels(settings.models)
+      }
+      console.log('💾 Saved agent settings to database')
+      
+      // Reload queue manager to use new configurations
+      try {
+        const response = await fetch(`${API_BASE}/queue/reload-agents`, {
+          method: 'POST'
+        })
+        if (response.ok) {
+          console.log('🔄 Queue manager reloaded with new configurations')
+        } else {
+          console.warn('Failed to reload queue manager configurations')
         }
-        return settings
+      } catch (error) {
+        console.error('Failed to reload queue manager:', error)
       }
     } catch (error) {
-      console.error('Failed to load agent settings from localStorage:', error)
+      console.error('Failed to save agent settings to database:', error)
+    }
+  }
+
+  const loadAgentSettings = async () => {
+    try {
+      const response = await fetch(`${API_BASE}/agents/config`)
+      if (response.ok) {
+        const data = await response.json()
+        console.log('🔄 Loaded agent settings from database:', data)
+        
+        if (data.config) {
+          const endpoints: {[key: string]: string} = {}
+          const models: {[key: string]: string} = {}
+          
+          for (const [stage, config] of Object.entries(data.config)) {
+            const stageConfig = config as any
+            endpoints[stage] = stageConfig.endpoint
+            models[stage] = stageConfig.model
+          }
+          
+          setCurrentEndpoints(endpoints)
+          setCurrentModels(models)
+          return data
+        }
+      }
+    } catch (error) {
+      console.error('Failed to load agent settings from database:', error)
     }
     return null
   }
@@ -188,6 +225,11 @@ function App() {
       const response = await fetch(`${API_BASE}/queue/status`)
       const data = await response.json()
       setQueueStatus(data)
+      
+      // Extract queue states (paused/running) from the response
+      if (data.queue_states) {
+        setQueueStates(data.queue_states)
+      }
     } catch (error) {
       console.error('Failed to get queue status:', error)
     }
@@ -207,6 +249,9 @@ function App() {
     try {
       const response = await fetch(`${API_BASE}/queue/pause/${stage}`, { method: 'POST' })
       if (response.ok) {
+        // Update local state immediately for instant feedback
+        setQueueStates(prev => ({ ...prev, [stage]: true }))
+        // Also refresh full status
         getQueueStatus()
       }
     } catch (error) {
@@ -218,6 +263,9 @@ function App() {
     try {
       const response = await fetch(`${API_BASE}/queue/resume/${stage}`, { method: 'POST' })
       if (response.ok) {
+        // Update local state immediately for instant feedback
+        setQueueStates(prev => ({ ...prev, [stage]: false }))
+        // Also refresh full status
         getQueueStatus()
       }
     } catch (error) {
@@ -242,32 +290,25 @@ function App() {
       const data = await response.json()
       setAgentConfig(data)
       
-      // Initialize currentEndpoints with the config endpoints, but prioritize saved settings
+      // Initialize currentEndpoints and models from database config
       if (data.config) {
         const initialEndpoints: {[key: string]: string} = {}
         const initialModels: {[key: string]: string} = {}
         
-        // Get saved settings
-        const savedSettings = loadAgentSettings()
-        
         Object.entries(data.config).forEach(([stage, config]: [string, any]) => {
-          // Use saved endpoint if available, otherwise use config default
-          const endpoint = savedSettings?.endpoints?.[stage] || config.endpoint
-          const model = savedSettings?.models?.[stage] || config.model
-          
-          if (endpoint) {
-            initialEndpoints[stage] = endpoint
-            initialModels[stage] = model
+          if (config.endpoint && config.model) {
+            initialEndpoints[stage] = config.endpoint
+            initialModels[stage] = config.model
             // Silently fetch models for each endpoint (no stage parameter = no loading indicator)
-            testEndpointAndFetchModels(endpoint)
+            testEndpointAndFetchModels(config.endpoint)
           }
         })
         
-        // Only update if we're not already using saved settings
-        if (!savedSettings?.endpoints || Object.keys(currentEndpoints).length === 0) {
+        // Only update if we don't have current settings loaded
+        if (Object.keys(currentEndpoints).length === 0) {
           setCurrentEndpoints(initialEndpoints)
         }
-        if (!savedSettings?.models || Object.keys(currentModels).length === 0) {
+        if (Object.keys(currentModels).length === 0) {
           setCurrentModels(initialModels)
         }
       }
@@ -293,6 +334,43 @@ function App() {
       }
     } catch (error) {
       console.error('Failed to update agent prompt:', error)
+    }
+  }
+
+  const refreshAgentData = async () => {
+    try {
+      console.log('🔄 Syncing agent data with latest defaults...')
+      
+      // First sync latest prompts from code to database
+      const syncResponse = await fetch(`${API_BASE}/agents/prompts/sync`, {
+        method: 'POST'
+      })
+      
+      const syncData = await syncResponse.json()
+      
+      if (!syncResponse.ok) {
+        throw new Error(syncData.detail || 'Sync failed')
+      }
+      
+      console.log('✅ Sync successful:', syncData)
+      
+      // Then fetch the updated data to refresh UI
+      await Promise.all([
+        getAgentPrompts(),
+        getAgentConfig()
+      ])
+      
+      // Show user feedback about what was updated
+      if (syncData.synced_agents.length > 0) {
+        alert(`✅ Agent Data Refreshed!\n\nUpdated ${syncData.synced_agents.length}/${syncData.total_agents} agents with latest code changes.\n\nUpdated: ${syncData.synced_agents.map((a: any) => `${a.stage} (v${a.new_version})`).join(', ')}`)
+      } else {
+        // Still show success even if no updates needed
+        console.log('📊 All agent data was already up-to-date')
+      }
+      
+    } catch (error: any) {
+      console.error('Failed to refresh agent data:', error)
+      alert(`❌ Agent Data Refresh Failed:\n\n${error.message}`)
     }
   }
 
@@ -442,11 +520,14 @@ function App() {
 
   useEffect(() => {
     // Load saved settings first, then fetch data
-    loadAgentSettings()
-    checkHealth()
-    getPosts()
-    getAgentPrompts()
-    getAgentConfig()
+    const initializeData = async () => {
+      await loadAgentSettings()
+      checkHealth()
+      getPosts()
+      getAgentPrompts()
+      getAgentConfig()
+    }
+    initializeData()
   }, [])
 
   // Auto-save when settings change
@@ -844,6 +925,15 @@ function App() {
                       <div style={{ marginBottom: '15px' }}>
                         <div style={{ color: '#8338ec', marginBottom: '5px' }}>Load Status:</div>
                         <div style={{ color: '#ffffff' }}>{status.current_load}/{status.max_concurrent}</div>
+                        
+                        <div style={{ color: '#8338ec', marginBottom: '5px', marginTop: '10px' }}>Queue State:</div>
+                        <div style={{ 
+                          color: queueStates[stage] ? '#ff3366' : '#00ff88',
+                          fontWeight: 'bold',
+                          textShadow: queueStates[stage] ? '0 0 5px #ff3366' : '0 0 5px #00ff88'
+                        }}>
+                          {queueStates[stage] ? '⏸️ PAUSED' : '▶️ RUNNING'}
+                        </div>
                       </div>
                       
                       <div style={{ display: 'flex', gap: '10px' }}>
@@ -851,10 +941,17 @@ function App() {
                           onClick={() => pauseQueue(stage)}
                           style={{
                             ...synthwaveStyles.button,
-                            background: 'linear-gradient(45deg, #ff3366, #ff006e)',
+                            background: queueStates[stage] 
+                              ? 'linear-gradient(45deg, #ff3366, #ff006e)' 
+                              : 'rgba(255, 51, 102, 0.3)',
+                            boxShadow: queueStates[stage] 
+                              ? '0 0 15px rgba(255, 51, 102, 0.6), 0 0 25px rgba(255, 51, 102, 0.4)' 
+                              : 'none',
+                            transform: queueStates[stage] ? 'scale(1.05)' : 'scale(1)',
+                            transition: 'all 0.3s ease',
                             flex: 1
                           }}
-                          className="synthwave-button"
+                          className={queueStates[stage] ? 'synthwave-button' : ''}
                         >
                           ⏸️ PAUSE
                         </button>
@@ -862,10 +959,17 @@ function App() {
                           onClick={() => resumeQueue(stage)}
                           style={{
                             ...synthwaveStyles.button,
-                            background: 'linear-gradient(45deg, #00ff88, #3a86ff)',
+                            background: !queueStates[stage] 
+                              ? 'linear-gradient(45deg, #00ff88, #3a86ff)' 
+                              : 'rgba(0, 255, 136, 0.3)',
+                            boxShadow: !queueStates[stage] 
+                              ? '0 0 15px rgba(0, 255, 136, 0.6), 0 0 25px rgba(0, 255, 136, 0.4)' 
+                              : 'none',
+                            transform: !queueStates[stage] ? 'scale(1.05)' : 'scale(1)',
+                            transition: 'all 0.3s ease',
                             flex: 1
                           }}
-                          className="synthwave-button"
+                          className={!queueStates[stage] ? 'synthwave-button' : ''}
                         >
                           ▶️ RESUME
                         </button>
@@ -1194,7 +1298,7 @@ function App() {
               ))}
               
               <button 
-                onClick={() => { getAgentPrompts(); getAgentConfig(); }}
+                onClick={refreshAgentData}
                 style={{
                   ...synthwaveStyles.button,
                   background: 'linear-gradient(45deg, #8338ec, #ff006e)',

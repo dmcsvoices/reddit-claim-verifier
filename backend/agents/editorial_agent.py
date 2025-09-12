@@ -13,20 +13,35 @@ if str(backend_dir) not in sys.path:
 
 from agents.base_agent import BaseAgent
 from tools.database_write import DatabaseWriteTool
+from tools.time_source import TimeSourceTool
 
 
 class EditorialAgent(BaseAgent):
     def get_tools(self) -> List[Dict[str, Any]]:
-        """Editorial agent only needs database write tool"""
-        return [DatabaseWriteTool.get_tool_definition()]
+        """Editorial agent needs time and database write tools"""
+        return [
+            TimeSourceTool.get_tool_definition(),
+            DatabaseWriteTool.get_tool_definition()
+        ]
     
-    def get_system_prompt(self) -> str:
+    def get_default_system_prompt(self) -> str:
         return """You are an editorial agent that reviews and polishes responses before publication.
 
-Your job is to:
-1. Review the draft response for accuracy and clarity
-2. Improve grammar, tone, and readability
-3. Verify source citations are proper and accessible
+CRITICAL INSTRUCTION: ALWAYS start your work by calling get_current_time to get the current date and time. This is mandatory before reviewing any content.
+
+Your workflow MUST be:
+1. FIRST: Call get_current_time (timezone="UTC", format="human") to establish temporal context
+2. THEN: Review the draft response for accuracy and clarity
+3. Verify all time references are current and accurate relative to today's date
+4. Improve grammar, tone, and readability
+5. Verify source citations are proper and accessible
+6. Ensure temporal context is appropriate for publication
+
+Use the current date/time to:
+- Verify any time references in the content are current and accurate
+- Avoid rejecting content due to perceived date inconsistencies  
+- Ensure temporal context is appropriate for publication
+- Update any outdated temporal references (e.g., "recent", "this year", etc.)
 4. Ensure appropriate Reddit tone and formatting
 5. Check for any remaining factual errors
 6. Make final quality improvements
@@ -61,16 +76,21 @@ Quality Checklist:
 Use write_to_database to save the final polished response with next_stage="post_queue"."""
     
     def build_messages(self, post_data: Dict[str, Any], context: Dict[str, Any] = None) -> List[Dict[str, str]]:
+        # Extract post info
+        title = post_data.get('title', 'No title')
+        body = post_data.get('body', 'No content')
+        post_id = post_data.get('id', 0)
+        
         # Get response draft from context
         response_result = context.get('response_result', {}) if context else {}
-        response_content = response_result.get('content', {})
+        response_content = response_result.get('content', {}) if isinstance(response_result, dict) else {}
         
         draft_response = response_content.get('result', 'No draft response available')
         confidence = response_content.get('confidence', 0.5)
         
         # Also get research context for fact-checking
         research_result = context.get('research_result', {}) if context else {}
-        research_content = research_result.get('content', {})
+        research_content = research_result.get('content', {}) if isinstance(research_result, dict) else {}
         fact_check_status = research_content.get('fact_check_status', 'unknown')
         
         return [
@@ -80,9 +100,9 @@ Use write_to_database to save the final polished response with next_stage="post_
                 "content": f"""Review and polish this response draft before publication:
 
 **ORIGINAL POST CONTEXT:**
-Title: "{post_data['title']}"
-Content: {post_data.get('body', 'No content')}
-Subreddit: r/{post_data.get('subreddit', 'unknown')}
+Post ID: {post_id}
+Title: "{title}"
+Content: {body}
 
 **DRAFT RESPONSE TO EDIT:**
 {draft_response}
@@ -100,7 +120,12 @@ Draft Confidence: {confidence}
 6. **Flow**: Ensure logical structure and smooth transitions
 7. **Appropriateness**: Check tone matches subreddit culture
 
-After editing, use write_to_database to save the final version.
+After editing, use write_to_database with:
+- post_id: {post_id}
+- stage: "editorial"
+- content: your polished final response
+- next_stage: "post_queue"
+
 Make improvements while maintaining the helpful, educational intent."""
             }
         ]

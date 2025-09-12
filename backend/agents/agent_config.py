@@ -15,36 +15,36 @@ from .editorial_agent import EditorialAgent
 AGENT_CONFIG = {
     "triage": {
         "class": TriageAgent,
-        "model": "llama3.1:8b",
-        "endpoint": os.getenv("TRIAGE_ENDPOINT", "http://localhost:8001"),
-        "timeout": 30,
+        "model": "deepseek-r1:1.5b",
+        "endpoint": os.getenv("TRIAGE_ENDPOINT", "http://192.168.1.71:11434"),
+        "timeout": 120,  # 2 minutes for model loading + processing
         "max_concurrent": 4,
         "description": "Identifies posts with factual claims worth fact-checking",
         "cost_per_token": 0.0001
     },
     "research": {
         "class": ResearchAgent, 
-        "model": "llama3.1:70b",
-        "endpoint": os.getenv("RESEARCH_ENDPOINT", "http://localhost:8002"),
-        "timeout": 300,  # 5 minutes for web research
+        "model": "gpt-oss:20b",
+        "endpoint": os.getenv("RESEARCH_ENDPOINT", "http://localhost:11434"),
+        "timeout": 600,  # 10 minutes for model loading + web research + tool calls
         "max_concurrent": 2,
         "description": "Researches factual claims using web search",
         "cost_per_token": 0.001
     },
     "response": {
         "class": ResponseAgent,
-        "model": "llama3.1:70b", 
-        "endpoint": os.getenv("RESPONSE_ENDPOINT", "http://localhost:8002"),
-        "timeout": 180,  # 3 minutes for response generation
+        "model": "gpt-oss:20b", 
+        "endpoint": os.getenv("RESPONSE_ENDPOINT", "http://localhost:11434"),
+        "timeout": 300,  # 5 minutes for model loading + response generation
         "max_concurrent": 2,
         "description": "Generates fact-based responses to Reddit posts",
         "cost_per_token": 0.001
     },
     "editorial": {
         "class": EditorialAgent,
-        "model": "llama3.1:8b",
-        "endpoint": os.getenv("EDITORIAL_ENDPOINT", "http://localhost:8001"), 
-        "timeout": 60,
+        "model": "gpt-oss:20b",
+        "endpoint": os.getenv("EDITORIAL_ENDPOINT", "http://localhost:11434"), 
+        "timeout": 180,  # 3 minutes for model loading + editing
         "max_concurrent": 3,
         "description": "Polishes and fact-checks response drafts",
         "cost_per_token": 0.0001
