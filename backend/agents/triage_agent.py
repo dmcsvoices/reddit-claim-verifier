@@ -227,7 +227,7 @@ Note:
         try:
             # Get LLM response
             messages = self.build_messages(post_data, context)
-            response = await self.call_ollama(messages, self.tools)
+            response = await self.call_llm(messages, self.tools)
             
             if "error" in response:
                 return response
