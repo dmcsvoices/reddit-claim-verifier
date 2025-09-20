@@ -484,6 +484,64 @@ async def get_pending_posts(stage: str):
         raise HTTPException(status_code=500, detail=f"Failed to get pending posts: {str(e)}")
 
 
+@app.get("/queue/post-results/{post_id}")
+async def get_post_results(post_id: int):
+    """Get all stage results for a specific post"""
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            # Get post info
+            cur.execute("""
+                SELECT id, title, queue_stage, queue_status
+                FROM posts
+                WHERE id = %s
+            """, (post_id,))
+
+            post_info = cur.fetchone()
+            if not post_info:
+                raise HTTPException(status_code=404, detail=f"Post {post_id} not found")
+
+            # Get all queue results for this post, ordered by stage progression
+            cur.execute("""
+                SELECT stage, content, created_at
+                FROM queue_results
+                WHERE post_id = %s
+                ORDER BY
+                    CASE stage
+                        WHEN 'triage' THEN 1
+                        WHEN 'research' THEN 2
+                        WHEN 'response' THEN 3
+                        WHEN 'editorial' THEN 4
+                        ELSE 5
+                    END,
+                    created_at ASC
+            """, (post_id,))
+
+            results = cur.fetchall()
+
+        conn.close()
+
+        # Format the results
+        stage_results = {}
+        for result in results:
+            stage, content, created_at = result
+            stage_results[stage] = {
+                "content": content,
+                "created_at": created_at.isoformat()
+            }
+
+        return {
+            "post_id": post_info[0],
+            "title": post_info[1],
+            "current_stage": post_info[2],
+            "queue_status": post_info[3],
+            "stage_results": stage_results
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get post results: {str(e)}")
+
+
 @app.post("/queue/pause/{stage}")
 async def pause_queue(stage: str):
     """Pause processing for a specific queue stage"""
@@ -1105,6 +1163,157 @@ async def test_llm_endpoint(request: TestEndpointRequest):
         raise HTTPException(status_code=500, detail=f"Request failed: {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Endpoint test failed: {str(e)}")
+
+
+@app.get("/posts/completed-editorial")
+async def get_completed_editorial_posts():
+    """Get posts that have completed the editorial stage and are ready for human review"""
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            # Get posts that completed editorial stage
+            cur.execute("""
+                SELECT DISTINCT
+                    p.id,
+                    p.reddit_id,
+                    p.title,
+                    p.author,
+                    p.url,
+                    p.body,
+                    p.created_utc,
+                    p.queue_stage,
+                    p.queue_status
+                FROM posts p
+                INNER JOIN queue_results qr ON p.id = qr.post_id
+                WHERE qr.stage = 'editorial'
+                AND qr.success = true
+                AND p.queue_stage = 'editorial'
+                AND p.queue_status = 'completed'
+                ORDER BY p.created_utc DESC
+                LIMIT 50
+            """)
+
+            completed_posts = []
+            for row in cur.fetchall():
+                completed_posts.append({
+                    "id": row[0],
+                    "reddit_id": row[1],
+                    "title": row[2],
+                    "author": row[3],
+                    "url": row[4],
+                    "body": row[5],
+                    "created_utc": row[6].isoformat() if row[6] else None,
+                    "queue_stage": row[7],
+                    "queue_status": row[8]
+                })
+
+        conn.close()
+        return {
+            "posts": completed_posts,
+            "count": len(completed_posts),
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get completed editorial posts: {str(e)}")
+
+
+@app.post("/posts/submit-to-reddit")
+async def submit_to_reddit(request: dict):
+    """Submit a response to Reddit using PRAW"""
+    try:
+        post_id = request.get('post_id')
+        reddit_id = request.get('reddit_id')
+        response_content = request.get('response_content')
+
+        if not all([post_id, reddit_id, response_content]):
+            raise HTTPException(status_code=400, detail="Missing required fields: post_id, reddit_id, response_content")
+
+        # Import PRAW here to avoid import errors if not installed
+        try:
+            import praw
+        except ImportError:
+            raise HTTPException(status_code=500, detail="PRAW library not installed. Please install with: pip install praw")
+
+        # Get Reddit credentials from environment
+        import os
+        reddit_client_id = os.getenv('REDDIT_CLIENT_ID')
+        reddit_client_secret = os.getenv('REDDIT_CLIENT_SECRET')
+        reddit_username = os.getenv('REDDIT_USERNAME')
+        reddit_password = os.getenv('REDDIT_PASSWORD')
+        reddit_user_agent = os.getenv('REDDIT_USER_AGENT', f'RedditMonitor/1.0 by {reddit_username}')
+
+        if not all([reddit_client_id, reddit_client_secret, reddit_username, reddit_password]):
+            raise HTTPException(status_code=500, detail="Reddit credentials not configured. Please set REDDIT_CLIENT_ID, REDDIT_CLIENT_SECRET, REDDIT_USERNAME, and REDDIT_PASSWORD environment variables.")
+
+        # Initialize Reddit instance
+        reddit = praw.Reddit(
+            client_id=reddit_client_id,
+            client_secret=reddit_client_secret,
+            username=reddit_username,
+            password=reddit_password,
+            user_agent=reddit_user_agent
+        )
+
+        # Get the submission by ID and reply to it
+        submission = reddit.submission(id=reddit_id)
+        comment = submission.reply(response_content)
+
+        # Update the post status in database
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE posts
+                SET queue_stage = 'post_queue', queue_status = 'completed'
+                WHERE id = %s
+            """, (post_id,))
+
+            # Log the successful posting
+            cur.execute("""
+                INSERT INTO queue_results (post_id, stage, content, success, created_at)
+                VALUES (%s, %s, %s, %s, %s)
+            """, (
+                post_id,
+                'reddit_post',
+                {"comment_id": comment.id, "permalink": comment.permalink, "response": response_content},
+                True,
+                datetime.now(timezone.utc)
+            ))
+
+        conn.commit()
+        conn.close()
+
+        return {
+            "success": True,
+            "comment_id": comment.id,
+            "permalink": comment.permalink,
+            "message": "Successfully posted to Reddit"
+        }
+
+    except Exception as e:
+        # Log the error
+        if 'post_id' in locals():
+            try:
+                conn = get_db_connection()
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        INSERT INTO queue_results (post_id, stage, content, success, error_message, created_at)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                    """, (
+                        post_id,
+                        'reddit_post',
+                        {"error": str(e)},
+                        False,
+                        str(e),
+                        datetime.now(timezone.utc)
+                    ))
+                conn.commit()
+                conn.close()
+            except:
+                pass  # Don't fail if we can't log the error
+
+        raise HTTPException(status_code=500, detail=f"Failed to post to Reddit: {str(e)}")
+
 
 if __name__ == "__main__":
     import uvicorn

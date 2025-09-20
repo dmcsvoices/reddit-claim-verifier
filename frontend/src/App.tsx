@@ -3,7 +3,7 @@ import './synthwave.css'
 
 const API_BASE = 'http://localhost:5151'
 
-type TabType = 'monitoring' | 'queues' | 'agents'
+type TabType = 'monitoring' | 'queues' | 'agents' | 'post'
 
 function App() {
   const [activeTab, setActiveTab] = useState<TabType>('monitoring')
@@ -36,6 +36,18 @@ function App() {
     stage: '',
     posts: []
   })
+  const [expandedPosts, setExpandedPosts] = useState<{[key: number]: any}>({}) // Track expanded post data
+
+  // Post tab state
+  const [completedPosts, setCompletedPosts] = useState<any[]>([])
+  const [postModal, setPostModal] = useState({
+    visible: false,
+    post: null,
+    originalPost: '',
+    editableResponse: '',
+    suspended: false,
+    posting: false
+  })
 
   // Agent Backend state  
   const [availableModels, setAvailableModels] = useState<{[key: string]: string[]}>({}) 
@@ -47,6 +59,10 @@ function App() {
   const [testingEndpoint, setTestingEndpoint] = useState<string | null>(null)
   const [currentEndpoints, setCurrentEndpoints] = useState<{[key: string]: string}>({}) // Track current endpoint values per stage
   const [currentModels, setCurrentModels] = useState<{[key: string]: string}>({}) // Track current model selections per stage
+
+  // Posts filtering state
+  const [stageFilter, setStageFilter] = useState<string>('all')
+  const [statusFilter, setStatusFilter] = useState<string>('all')
 
   // Database persistence helpers
   const saveAgentSettings = async () => {
@@ -260,8 +276,173 @@ function App() {
         stage: stage,
         posts: data.pending_posts || []
       })
+      // Clear expanded posts when opening new modal
+      setExpandedPosts({})
     } catch (error) {
       console.error('Failed to get pending posts:', error)
+    }
+  }
+
+  const getPostResults = async (postId: number) => {
+    try {
+      const response = await fetch(`${API_BASE}/queue/post-results/${postId}`)
+      const data = await response.json()
+      return data
+    } catch (error) {
+      console.error(`Failed to get post results for ${postId}:`, error)
+      return null
+    }
+  }
+
+  const getPreviousStage = (currentStage: string): string | null => {
+    const stageFlow = {
+      'research': 'triage',
+      'response': 'research',
+      'editorial': 'response',
+      'post_queue': 'editorial'
+    }
+    return stageFlow[currentStage as keyof typeof stageFlow] || null
+  }
+
+  // Function to format stage results content nicely
+  const formatStageContent = (content: any): string => {
+    if (typeof content === 'string') {
+      return content
+    }
+
+    if (typeof content === 'object' && content !== null) {
+      // Handle common agent response structures
+      if (content.analysis) {
+        return content.analysis
+      }
+      if (content.response) {
+        return content.response
+      }
+      if (content.decision) {
+        return `Decision: ${content.decision}\n\nReasoning: ${content.reasoning || 'No reasoning provided'}`
+      }
+      if (content.summary) {
+        return content.summary
+      }
+
+      // Recursive function to format nested objects
+      const formatObject = (obj: any, indent: string = ''): string => {
+        if (typeof obj === 'string') {
+          return obj
+        }
+        if (typeof obj === 'number' || typeof obj === 'boolean') {
+          return String(obj)
+        }
+        if (Array.isArray(obj)) {
+          return obj.map((item, index) => `${indent}${index + 1}. ${formatObject(item, indent + '  ')}`).join('\n')
+        }
+        if (typeof obj === 'object' && obj !== null) {
+          return Object.entries(obj)
+            .map(([key, value]) => {
+              const formattedKey = key.charAt(0).toUpperCase() + key.slice(1).replace(/([A-Z])/g, ' $1')
+              const formattedValue = formatObject(value, indent + '  ')
+              return `${indent}${formattedKey}:\n${indent}  ${formattedValue}`
+            })
+            .join('\n\n')
+        }
+        return String(obj)
+      }
+
+      return formatObject(content)
+    }
+
+    return String(content)
+  }
+
+  // Function to fetch completed editorial posts
+  const getCompletedPosts = async () => {
+    try {
+      const response = await fetch(`${API_BASE}/posts/completed-editorial`)
+      const data = await response.json()
+      setCompletedPosts(data.posts || [])
+    } catch (error) {
+      console.error('Error fetching completed posts:', error)
+    }
+  }
+
+  // Function to handle opening post modal for review
+  const handlePostReview = async (post: any) => {
+    try {
+      // Get the editorial result for this post
+      const response = await fetch(`${API_BASE}/queue/post-results/${post.id}`)
+      const data = await response.json()
+
+      const editorialResult = data.stage_results?.editorial
+
+      setPostModal({
+        visible: true,
+        post: post,
+        originalPost: `${post.title}\n\n${post.body || ''}`,
+        editableResponse: editorialResult?.content ? formatStageContent(editorialResult.content) : '',
+        suspended: false,
+        posting: false
+      })
+    } catch (error) {
+      console.error('Error loading post details:', error)
+    }
+  }
+
+  // Function to post to Reddit
+  const postToReddit = async () => {
+    if (!postModal.post) return
+
+    setPostModal(prev => ({ ...prev, posting: true }))
+
+    try {
+      const response = await fetch(`${API_BASE}/posts/submit-to-reddit`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          post_id: postModal.post.id,
+          reddit_id: postModal.post.reddit_id,
+          response_content: postModal.editableResponse
+        })
+      })
+
+      const result = await response.json()
+
+      if (response.ok) {
+        alert('Successfully posted to Reddit!')
+        setPostModal({ visible: false, post: null, originalPost: '', editableResponse: '', suspended: false, posting: false })
+        getCompletedPosts() // Refresh the list
+      } else {
+        alert(`Error posting to Reddit: ${result.detail}`)
+      }
+    } catch (error) {
+      console.error('Error posting to Reddit:', error)
+      alert('Error posting to Reddit')
+    } finally {
+      setPostModal(prev => ({ ...prev, posting: false }))
+    }
+  }
+
+  const handlePostClick = async (post: any) => {
+    const postId = post.id
+
+    // If already expanded, collapse it
+    if (expandedPosts[postId]) {
+      setExpandedPosts(prev => {
+        const newState = { ...prev }
+        delete newState[postId]
+        return newState
+      })
+      return
+    }
+
+    // Fetch post results and expand
+    const results = await getPostResults(postId)
+    if (results) {
+      setExpandedPosts(prev => ({
+        ...prev,
+        [postId]: results
+      }))
     }
   }
 
@@ -598,7 +779,14 @@ function App() {
         >
           🔄 Queue Control
         </button>
-        <button 
+        <button
+          style={synthwaveStyles.navButton(activeTab === 'post')}
+          onClick={() => setActiveTab('post')}
+          className="synthwave-button"
+        >
+          📝 Post
+        </button>
+        <button
           style={synthwaveStyles.navButton(activeTab === 'agents')}
           onClick={() => {
             setActiveTab('agents')
@@ -607,7 +795,7 @@ function App() {
           }}
           className="synthwave-button"
         >
-          🧠 Agent Config
+          ⚙️ Settings
         </button>
       </nav>
       
@@ -871,7 +1059,7 @@ function App() {
             {/* Recent Posts Card */}
             <div style={synthwaveStyles.card} className="synthwave-card">
               <h2 style={synthwaveStyles.cardTitle}>📋 RECENT POSTS DATABASE</h2>
-              <div style={{ display: 'flex', gap: '15px', marginBottom: '20px' }}>
+              <div style={{ display: 'flex', gap: '15px', marginBottom: '20px', alignItems: 'center', flexWrap: 'wrap' }}>
                 <button
                   onClick={async () => {
                     console.log('Refresh Posts button clicked');
@@ -890,16 +1078,117 @@ function App() {
                 >
                   🔄 REFRESH POSTS
                 </button>
+
+                {/* Filter Controls */}
+                <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                  <label style={{ color: '#ff006e', fontSize: '0.9em', fontWeight: 'bold' }}>
+                    Stage:
+                  </label>
+                  <select
+                    value={stageFilter}
+                    onChange={(e) => setStageFilter(e.target.value)}
+                    style={{
+                      background: 'rgba(0, 0, 0, 0.5)',
+                      border: '1px solid #ff006e',
+                      borderRadius: '5px',
+                      color: '#ffffff',
+                      padding: '5px 10px',
+                      fontSize: '0.9em'
+                    }}
+                  >
+                    <option value="all">All Stages</option>
+                    <option value="triage">Triage</option>
+                    <option value="research">Research</option>
+                    <option value="response">Response</option>
+                    <option value="editorial">Editorial</option>
+                    <option value="post_queue">Post Queue</option>
+                    <option value="completed">Completed</option>
+                    <option value="rejected">Rejected</option>
+                  </select>
+
+                  <label style={{ color: '#ff006e', fontSize: '0.9em', fontWeight: 'bold', marginLeft: '15px' }}>
+                    Status:
+                  </label>
+                  <select
+                    value={statusFilter}
+                    onChange={(e) => setStatusFilter(e.target.value)}
+                    style={{
+                      background: 'rgba(0, 0, 0, 0.5)',
+                      border: '1px solid #ff006e',
+                      borderRadius: '5px',
+                      color: '#ffffff',
+                      padding: '5px 10px',
+                      fontSize: '0.9em'
+                    }}
+                  >
+                    <option value="all">All Status</option>
+                    <option value="pending">Pending</option>
+                    <option value="processing">Processing</option>
+                    <option value="completed">Completed</option>
+                    <option value="failed">Failed</option>
+                  </select>
+
+                  {/* Clear Filters Button */}
+                  {(stageFilter !== 'all' || statusFilter !== 'all') && (
+                    <button
+                      onClick={() => {
+                        setStageFilter('all');
+                        setStatusFilter('all');
+                      }}
+                      style={{
+                        background: 'linear-gradient(45deg, #8338ec, #ff006e)',
+                        border: 'none',
+                        borderRadius: '5px',
+                        color: '#ffffff',
+                        padding: '5px 10px',
+                        fontSize: '0.8em',
+                        cursor: 'pointer',
+                        marginLeft: '10px'
+                      }}
+                    >
+                      🗑️ Clear
+                    </button>
+                  )}
+                </div>
               </div>
               
               <div style={{ maxHeight: '400px', overflowY: 'auto' }}>
-                {posts.length === 0 ? (
-                  <div style={{ textAlign: 'center', padding: '40px', color: '#8338ec' }}>
-                    <div style={{ fontSize: '3em', marginBottom: '10px' }}>📭</div>
-                    <div>No posts found in database</div>
-                  </div>
-                ) : (
-                  posts.map((post, index) => (
+                {(() => {
+                  // Filter posts based on selected criteria
+                  const filteredPosts = posts.filter(post => {
+                    const postStage = post[8] || '';
+                    const postStatus = post[9] || '';
+
+                    const stageMatch = stageFilter === 'all' || postStage === stageFilter;
+                    const statusMatch = statusFilter === 'all' || postStatus === statusFilter;
+
+                    return stageMatch && statusMatch;
+                  });
+
+                  if (posts.length === 0) {
+                    return (
+                      <div style={{ textAlign: 'center', padding: '40px', color: '#8338ec' }}>
+                        <div style={{ fontSize: '3em', marginBottom: '10px' }}>📭</div>
+                        <div>No posts found in database</div>
+                      </div>
+                    );
+                  }
+
+                  if (filteredPosts.length === 0) {
+                    return (
+                      <div style={{ textAlign: 'center', padding: '40px', color: '#ff006e' }}>
+                        <div style={{ fontSize: '3em', marginBottom: '10px' }}>🔍</div>
+                        <div>No posts match the selected filters</div>
+                        <div style={{ fontSize: '0.9em', marginTop: '10px', color: '#888' }}>
+                          {stageFilter !== 'all' && `Stage: ${stageFilter}`}
+                          {stageFilter !== 'all' && statusFilter !== 'all' && ' • '}
+                          {statusFilter !== 'all' && `Status: ${statusFilter}`}
+                        </div>
+                      </div>
+                    );
+                  }
+
+                  return filteredPosts.map((post, index) => (
                     <div key={index} style={{
                       background: 'rgba(58, 134, 255, 0.1)',
                       border: '1px solid rgba(58, 134, 255, 0.3)',
@@ -934,9 +1223,43 @@ function App() {
                         </div>
                       )}
                     </div>
-                  ))
-                )}
+                  ));
+                })()}
               </div>
+
+              {/* Filter Summary */}
+              {(stageFilter !== 'all' || statusFilter !== 'all') && (
+                <div style={{
+                  marginTop: '15px',
+                  padding: '10px',
+                  background: 'rgba(255, 0, 110, 0.1)',
+                  border: '1px solid rgba(255, 0, 110, 0.3)',
+                  borderRadius: '8px',
+                  textAlign: 'center',
+                  fontSize: '0.9em'
+                }}>
+                  <span style={{ color: '#ff006e' }}>🔽 Filtering: </span>
+                  <span style={{ color: '#ffffff' }}>
+                    {(() => {
+                      const filteredCount = posts.filter(post => {
+                        const postStage = post[8] || '';
+                        const postStatus = post[9] || '';
+                        const stageMatch = stageFilter === 'all' || postStage === stageFilter;
+                        const statusMatch = statusFilter === 'all' || postStatus === statusFilter;
+                        return stageMatch && statusMatch;
+                      }).length;
+
+                      return `${filteredCount} of ${posts.length} posts shown`;
+                    })()}
+                  </span>
+                  {stageFilter !== 'all' && (
+                    <span style={{ color: '#00ff88', marginLeft: '10px' }}>Stage: {stageFilter}</span>
+                  )}
+                  {statusFilter !== 'all' && (
+                    <span style={{ color: '#3a86ff', marginLeft: '10px' }}>Status: {statusFilter}</span>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -1700,6 +2023,117 @@ function App() {
             </div>
           </div>
         )}
+
+        {activeTab === 'post' && (
+          <div>
+            {/* Post Review Dashboard */}
+            <div style={synthwaveStyles.card} className="synthwave-card">
+              <h2 style={synthwaveStyles.cardTitle}>📝 POST REVIEW & SUBMISSION</h2>
+
+              <div style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                marginBottom: '20px'
+              }}>
+                <span style={{ color: '#ffffff', fontSize: '1.1em' }}>
+                  Ready for human review and Reddit posting
+                </span>
+                <button
+                  onClick={getCompletedPosts}
+                  style={{
+                    ...synthwaveStyles.button,
+                    background: 'linear-gradient(45deg, #ff006e, #8338ec)',
+                    padding: '8px 16px',
+                    fontSize: '0.9em'
+                  }}
+                  className="synthwave-button"
+                >
+                  🔄 REFRESH LIST
+                </button>
+              </div>
+
+              <div style={{
+                display: 'grid',
+                gap: '15px',
+                maxHeight: '500px',
+                overflow: 'auto'
+              }}>
+                {completedPosts.length === 0 ? (
+                  <div style={{
+                    textAlign: 'center',
+                    color: '#8892b0',
+                    fontSize: '1.1em',
+                    padding: '40px'
+                  }}>
+                    📭 No completed editorial posts ready for review
+                  </div>
+                ) : (
+                  completedPosts.map((post: any, index: number) => (
+                    <div
+                      key={post.id}
+                      onClick={() => handlePostReview(post)}
+                      style={{
+                        background: 'rgba(255, 255, 255, 0.05)',
+                        border: '1px solid rgba(255, 0, 110, 0.2)',
+                        borderRadius: '10px',
+                        padding: '15px',
+                        cursor: 'pointer',
+                        transition: 'all 0.2s ease'
+                      }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.background = 'rgba(255, 0, 110, 0.1)'
+                        e.currentTarget.style.borderColor = 'rgba(255, 0, 110, 0.5)'
+                        e.currentTarget.style.transform = 'scale(1.02)'
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)'
+                        e.currentTarget.style.borderColor = 'rgba(255, 0, 110, 0.2)'
+                        e.currentTarget.style.transform = 'scale(1)'
+                      }}
+                    >
+                      <div style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'flex-start',
+                        marginBottom: '10px'
+                      }}>
+                        <h3 style={{
+                          color: '#ff006e',
+                          fontSize: '1.1em',
+                          margin: 0,
+                          flex: 1,
+                          marginRight: '15px'
+                        }}>
+                          {post.title}
+                        </h3>
+                        <span style={{
+                          color: '#3a86ff',
+                          fontSize: '0.85em',
+                          whiteSpace: 'nowrap'
+                        }}>
+                          ✨ Ready to Post
+                        </span>
+                      </div>
+
+                      <div style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        fontSize: '0.85em',
+                        color: '#8892b0'
+                      }}>
+                        <span>👤 {post.author}</span>
+                        <span>🔗 {post.reddit_id}</span>
+                        <span>📅 {new Date(post.created_utc).toLocaleDateString()}</span>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Pending Posts Modal */}
@@ -1784,55 +2218,142 @@ function App() {
                   No pending posts found
                 </div>
               ) : (
-                pendingPostsModal.posts.map((post: any, index: number) => (
-                  <div key={post.id} style={{
-                    background: 'rgba(255, 255, 255, 0.05)',
-                    border: '1px solid rgba(255, 0, 110, 0.2)',
-                    borderRadius: '10px',
-                    padding: '15px',
-                    transition: 'all 0.2s ease'
-                  }}>
-                    <div style={{
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      alignItems: 'flex-start',
-                      marginBottom: '10px'
-                    }}>
-                      <div style={{
-                        color: '#ff006e',
-                        fontSize: '0.9em',
-                        fontWeight: 'bold'
-                      }}>
-                        #{index + 1} • u/{post.author}
+                pendingPostsModal.posts.map((post: any, index: number) => {
+                  const isExpanded = expandedPosts[post.id]
+                  const previousStage = getPreviousStage(pendingPostsModal.stage)
+                  const previousStageResults = isExpanded?.stage_results?.[previousStage]
+
+                  return (
+                    <div key={post.id}>
+                      {/* Main Post Item */}
+                      <div
+                        onClick={() => handlePostClick(post)}
+                        style={{
+                          background: isExpanded ? 'rgba(255, 0, 110, 0.1)' : 'rgba(255, 255, 255, 0.05)',
+                          border: isExpanded ? '2px solid rgba(255, 0, 110, 0.5)' : '1px solid rgba(255, 0, 110, 0.2)',
+                          borderRadius: '10px',
+                          padding: '15px',
+                          transition: 'all 0.2s ease',
+                          cursor: 'pointer'
+                        }}
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.background = isExpanded ? 'rgba(255, 0, 110, 0.15)' : 'rgba(255, 255, 255, 0.1)'
+                          e.currentTarget.style.transform = 'scale(1.02)'
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.background = isExpanded ? 'rgba(255, 0, 110, 0.1)' : 'rgba(255, 255, 255, 0.05)'
+                          e.currentTarget.style.transform = 'scale(1)'
+                        }}
+                      >
+                        <div style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'flex-start',
+                          marginBottom: '10px'
+                        }}>
+                          <div style={{
+                            color: '#ff006e',
+                            fontSize: '0.9em',
+                            fontWeight: 'bold'
+                          }}>
+                            #{index + 1} • u/{post.author}
+                          </div>
+                          <div style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '10px',
+                            color: '#ffcc00',
+                            fontSize: '0.8em'
+                          }}>
+                            {post.retry_count > 0 && `Retry: ${post.retry_count}`}
+                            <span style={{ color: '#00ff88' }}>
+                              {isExpanded ? '🔼 Click to collapse' : '🔽 Click to expand'}
+                            </span>
+                          </div>
+                        </div>
+                        <div style={{
+                          color: '#ffffff',
+                          fontSize: '1.1em',
+                          lineHeight: '1.4',
+                          marginBottom: '10px'
+                        }}>
+                          {post.title}
+                        </div>
+                        <div style={{
+                          color: '#8892b0',
+                          fontSize: '0.85em',
+                          display: 'flex',
+                          justifyContent: 'space-between'
+                        }}>
+                          <span>Post ID: {post.reddit_id}</span>
+                          <span>
+                            {new Date(post.created_utc).toLocaleString()}
+                          </span>
+                        </div>
                       </div>
-                      <div style={{
-                        color: '#ffcc00',
-                        fontSize: '0.8em'
-                      }}>
-                        {post.retry_count > 0 && `Retry: ${post.retry_count}`}
-                      </div>
+
+                      {/* Expanded Previous Stage Results */}
+                      {isExpanded && previousStage && previousStageResults && (
+                        <div style={{
+                          marginTop: '10px',
+                          marginLeft: '20px',
+                          background: 'rgba(0, 0, 0, 0.3)',
+                          border: '1px solid rgba(58, 134, 255, 0.3)',
+                          borderRadius: '8px',
+                          padding: '15px'
+                        }}>
+                          <h4 style={{
+                            color: '#3a86ff',
+                            margin: '0 0 10px 0',
+                            fontSize: '1em',
+                            textTransform: 'uppercase'
+                          }}>
+                            📋 {previousStage} Stage Results
+                          </h4>
+
+                          <div style={{
+                            background: 'rgba(255, 255, 255, 0.05)',
+                            borderRadius: '5px',
+                            padding: '12px',
+                            fontSize: '0.9em',
+                            color: '#ffffff',
+                            lineHeight: '1.6',
+                            maxHeight: '300px',
+                            overflow: 'auto',
+                            whiteSpace: 'pre-wrap',
+                            wordBreak: 'break-word'
+                          }}>
+                            {formatStageContent(previousStageResults.content)}
+                          </div>
+
+                          <div style={{
+                            marginTop: '8px',
+                            fontSize: '0.75em',
+                            color: '#8892b0'
+                          }}>
+                            <span>Completed: {new Date(previousStageResults.created_at).toLocaleString()}</span>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Show message if no previous stage */}
+                      {isExpanded && !previousStage && (
+                        <div style={{
+                          marginTop: '10px',
+                          marginLeft: '20px',
+                          background: 'rgba(255, 140, 0, 0.1)',
+                          border: '1px solid rgba(255, 140, 0, 0.3)',
+                          borderRadius: '8px',
+                          padding: '15px',
+                          textAlign: 'center',
+                          color: '#ff8c00'
+                        }}>
+                          📭 This is the first stage - no previous results to show
+                        </div>
+                      )}
                     </div>
-                    <div style={{
-                      color: '#ffffff',
-                      fontSize: '1.1em',
-                      lineHeight: '1.4',
-                      marginBottom: '10px'
-                    }}>
-                      {post.title}
-                    </div>
-                    <div style={{
-                      color: '#8892b0',
-                      fontSize: '0.85em',
-                      display: 'flex',
-                      justifyContent: 'space-between'
-                    }}>
-                      <span>Post ID: {post.reddit_id}</span>
-                      <span>
-                        {new Date(post.created_utc).toLocaleString()}
-                      </span>
-                    </div>
-                  </div>
-                ))
+                  )
+                })
               )}
             </div>
 
@@ -1851,6 +2372,186 @@ function App() {
               >
                 CLOSE
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Post Review Modal */}
+      {postModal.visible && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: 'rgba(0, 0, 0, 0.8)',
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+          zIndex: 1000
+        }}>
+          <div style={{
+            background: 'linear-gradient(135deg, #0f0f23 0%, #1a1a3a 50%, #0f0f23 100%)',
+            border: '2px solid #ff006e',
+            borderRadius: '15px',
+            padding: '30px',
+            maxWidth: '90%',
+            maxHeight: '90%',
+            overflow: 'auto',
+            minWidth: '800px',
+            boxShadow: '0 0 50px rgba(255, 0, 110, 0.3)'
+          }}>
+            <div style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              marginBottom: '25px'
+            }}>
+              <h2 style={{
+                color: '#ff006e',
+                fontSize: '1.8em',
+                textTransform: 'uppercase',
+                textShadow: '0 0 10px #ff006e',
+                margin: 0
+              }}>
+                📝 POST REVIEW & SUBMISSION
+              </h2>
+              <button
+                onClick={() => setPostModal({ visible: false, post: null, originalPost: '', editableResponse: '', suspended: false, posting: false })}
+                style={{
+                  background: 'transparent',
+                  border: '2px solid #ff006e',
+                  borderRadius: '50%',
+                  width: '40px',
+                  height: '40px',
+                  color: '#ff006e',
+                  fontSize: '20px',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center'
+                }}
+              >
+                ×
+              </button>
+            </div>
+
+            <div style={{ display: 'flex', gap: '20px', marginBottom: '20px' }}>
+              {/* Original Post */}
+              <div style={{ flex: 1 }}>
+                <h3 style={{
+                  color: '#3a86ff',
+                  fontSize: '1.2em',
+                  marginBottom: '10px',
+                  textShadow: '0 0 10px #3a86ff'
+                }}>
+                  📄 Original Post
+                </h3>
+                <textarea
+                  value={postModal.originalPost}
+                  readOnly
+                  style={{
+                    width: '100%',
+                    height: '300px',
+                    background: 'rgba(255, 255, 255, 0.05)',
+                    border: '1px solid rgba(58, 134, 255, 0.3)',
+                    borderRadius: '8px',
+                    padding: '15px',
+                    color: '#ffffff',
+                    fontSize: '0.9em',
+                    lineHeight: '1.5',
+                    resize: 'none',
+                    fontFamily: 'inherit'
+                  }}
+                />
+              </div>
+
+              {/* Editable Response */}
+              <div style={{ flex: 1 }}>
+                <h3 style={{
+                  color: '#ff006e',
+                  fontSize: '1.2em',
+                  marginBottom: '10px',
+                  textShadow: '0 0 10px #ff006e'
+                }}>
+                  ✏️ Response (Editable)
+                </h3>
+                <textarea
+                  value={postModal.editableResponse}
+                  onChange={(e) => setPostModal(prev => ({ ...prev, editableResponse: e.target.value }))}
+                  style={{
+                    width: '100%',
+                    height: '300px',
+                    background: 'rgba(255, 255, 255, 0.05)',
+                    border: '1px solid rgba(255, 0, 110, 0.3)',
+                    borderRadius: '8px',
+                    padding: '15px',
+                    color: '#ffffff',
+                    fontSize: '0.9em',
+                    lineHeight: '1.5',
+                    resize: 'none',
+                    fontFamily: 'inherit'
+                  }}
+                />
+              </div>
+            </div>
+
+            {/* Controls */}
+            <div style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              marginTop: '20px'
+            }}>
+              <label style={{
+                display: 'flex',
+                alignItems: 'center',
+                color: '#ffffff',
+                fontSize: '1em',
+                cursor: 'pointer'
+              }}>
+                <input
+                  type="checkbox"
+                  checked={postModal.suspended}
+                  onChange={(e) => setPostModal(prev => ({ ...prev, suspended: e.target.checked }))}
+                  style={{
+                    marginRight: '8px',
+                    transform: 'scale(1.2)'
+                  }}
+                />
+                🚫 Suspend (don't post)
+              </label>
+
+              <div style={{ display: 'flex', gap: '15px' }}>
+                <button
+                  onClick={() => setPostModal({ visible: false, post: null, originalPost: '', editableResponse: '', suspended: false, posting: false })}
+                  style={{
+                    ...synthwaveStyles.button,
+                    background: 'linear-gradient(45deg, #8892b0, #64748b)',
+                    padding: '12px 24px'
+                  }}
+                  className="synthwave-button"
+                >
+                  CANCEL
+                </button>
+                <button
+                  onClick={postToReddit}
+                  disabled={postModal.suspended || postModal.posting}
+                  style={{
+                    ...synthwaveStyles.button,
+                    background: postModal.suspended
+                      ? 'linear-gradient(45deg, #64748b, #475569)'
+                      : 'linear-gradient(45deg, #ff006e, #8338ec)',
+                    padding: '12px 24px',
+                    opacity: postModal.suspended ? 0.5 : 1,
+                    cursor: postModal.suspended ? 'not-allowed' : 'pointer'
+                  }}
+                  className="synthwave-button"
+                >
+                  {postModal.posting ? '⏳ POSTING...' : '🚀 ACCEPT & POST TO REDDIT'}
+                </button>
+              </div>
             </div>
           </div>
         </div>
