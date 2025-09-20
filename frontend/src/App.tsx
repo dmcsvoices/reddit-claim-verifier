@@ -38,6 +38,13 @@ function App() {
   })
   const [expandedPosts, setExpandedPosts] = useState<{[key: number]: any}>({}) // Track expanded post data
 
+  // Rejected posts state
+  const [rejectedPostsModal, setRejectedPostsModal] = useState<{visible: boolean, posts: any[], selectedPost: any | null}>({
+    visible: false,
+    posts: [],
+    selectedPost: null
+  })
+
   // Post tab state
   const [completedPosts, setCompletedPosts] = useState<any[]>([])
   const [postModal, setPostModal] = useState({
@@ -294,6 +301,21 @@ function App() {
     }
   }
 
+  const getRejectedPosts = async () => {
+    try {
+      const response = await fetch(`${API_BASE}/queue/rejected`)
+      const data = await response.json()
+      setRejectedPostsModal(prev => ({
+        ...prev,
+        visible: true,
+        posts: data.rejected_posts || [],
+        selectedPost: null
+      }))
+    } catch (error) {
+      console.error('Failed to get rejected posts:', error)
+    }
+  }
+
   const getPreviousStage = (currentStage: string): string | null => {
     const stageFlow = {
       'research': 'triage',
@@ -312,6 +334,10 @@ function App() {
 
     if (typeof content === 'object' && content !== null) {
       // Handle common agent response structures
+      // For editorial agents, prioritize the 'result' field which contains the actual response content
+      if (content.result) {
+        return content.result
+      }
       if (content.analysis) {
         return content.analysis
       }
@@ -368,17 +394,19 @@ function App() {
   // Function to handle opening post modal for review
   const handlePostReview = async (post: any) => {
     try {
-      // Get the editorial result for this post
+      // Get the stage results for this post
       const response = await fetch(`${API_BASE}/queue/post-results/${post.id}`)
       const data = await response.json()
 
-      const editorialResult = data.stage_results?.editorial
+      // Try to get editorial result, fall back to response, then research, then triage
+      const stageResults = data.stage_results || {}
+      const editorialResult = stageResults.editorial || stageResults.response || stageResults.research || stageResults.triage
 
       setPostModal({
         visible: true,
         post: post,
         originalPost: `${post.title}\n\n${post.body || ''}`,
-        editableResponse: editorialResult?.content ? formatStageContent(editorialResult.content) : '',
+        editableResponse: editorialResult?.content ? formatStageContent(editorialResult.content) : 'No content available for editing',
         suspended: false,
         posting: false
       })
@@ -1523,6 +1551,79 @@ function App() {
                       )
                     })
                   })()}
+
+                  {/* Triage Rejects Box */}
+                  {(() => {
+                    const rejectedStats = queueStats.detailed_stats?.find((stat: any) => stat.stage === 'rejected' && stat.status === 'rejected')
+                    const rejectedCount = rejectedStats?.count || 0
+                    const colors = { bg: 'rgba(255, 51, 102, 0.1)', border: '#ff3366', text: '#ff3366' }
+
+                    if (rejectedCount > 0) {
+                      return (
+                        <div style={{
+                          background: colors.bg,
+                          border: `2px solid ${colors.border}`,
+                          borderRadius: '15px',
+                          padding: '25px',
+                          boxShadow: `0 0 20px ${colors.border}40`,
+                          cursor: 'pointer',
+                          transition: 'all 0.2s ease'
+                        }}
+                        onClick={getRejectedPosts}
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.transform = 'scale(1.02)'
+                          e.currentTarget.style.boxShadow = `0 0 30px ${colors.border}60`
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.transform = 'scale(1)'
+                          e.currentTarget.style.boxShadow = `0 0 20px ${colors.border}40`
+                        }}>
+                          <h3 style={{
+                            color: colors.text,
+                            marginBottom: '20px',
+                            textTransform: 'uppercase',
+                            textAlign: 'center',
+                            fontSize: '1.3em',
+                            textShadow: `0 0 10px ${colors.border}`
+                          }}>
+                            🚫 TRIAGE REJECTS
+                          </h3>
+
+                          {/* Total Rejected Posts Display */}
+                          <div style={{
+                            textAlign: 'center',
+                            marginBottom: '25px',
+                            padding: '15px',
+                            background: 'rgba(0, 0, 0, 0.3)',
+                            borderRadius: '10px'
+                          }}>
+                            <div style={{
+                              fontSize: '3em',
+                              color: colors.text,
+                              fontWeight: 'bold',
+                              textShadow: `0 0 15px ${colors.border}`
+                            }}>
+                              {rejectedCount}
+                            </div>
+                            <div style={{ color: '#ffffff', fontSize: '1.1em' }}>
+                              Rejected Posts
+                            </div>
+                          </div>
+
+                          {/* Click to view details */}
+                          <div style={{
+                            textAlign: 'center',
+                            color: '#ffffff',
+                            fontSize: '0.9em',
+                            opacity: 0.8
+                          }}>
+                            👆 Click to view rejection details
+                          </div>
+                        </div>
+                      )
+                    }
+                    return null
+                  })()}
                 </div>
 
                 {/* Refresh Button for Queue Statistics */}
@@ -2366,6 +2467,275 @@ function App() {
                 style={{
                   ...synthwaveStyles.button,
                   background: 'linear-gradient(45deg, #ff006e, #8338ec)',
+                  padding: '12px 30px'
+                }}
+                className="synthwave-button"
+              >
+                CLOSE
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Rejected Posts Modal */}
+      {rejectedPostsModal.visible && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(0, 0, 0, 0.8)',
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+          zIndex: 1000
+        }}>
+          <div style={{
+            background: 'linear-gradient(135deg, #0f0f23 0%, #1a1a3a 50%, #0f0f23 100%)',
+            border: '2px solid #ff3366',
+            borderRadius: '15px',
+            padding: '30px',
+            maxWidth: '90%',
+            maxHeight: '90%',
+            overflow: 'auto',
+            minWidth: '800px',
+            boxShadow: '0 0 50px rgba(255, 51, 102, 0.3)'
+          }}>
+            <div style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              marginBottom: '25px'
+            }}>
+              <h2 style={{
+                color: '#ff3366',
+                fontSize: '1.8em',
+                textTransform: 'uppercase',
+                textShadow: '0 0 10px #ff3366',
+                margin: 0
+              }}>
+                🚫 TRIAGE REJECTS
+                <span style={{ color: '#ffffff', marginLeft: '10px' }}>
+                  ({rejectedPostsModal.posts.length})
+                </span>
+              </h2>
+              <button
+                onClick={() => setRejectedPostsModal({visible: false, posts: [], selectedPost: null})}
+                style={{
+                  background: 'transparent',
+                  border: '2px solid #ff3366',
+                  borderRadius: '50%',
+                  width: '40px',
+                  height: '40px',
+                  color: '#ff3366',
+                  fontSize: '20px',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center'
+                }}
+              >
+                ×
+              </button>
+            </div>
+
+            {rejectedPostsModal.selectedPost ? (
+              /* Post Detail View */
+              <div>
+                <button
+                  onClick={() => setRejectedPostsModal(prev => ({...prev, selectedPost: null}))}
+                  style={{
+                    background: 'transparent',
+                    border: '1px solid #ff3366',
+                    borderRadius: '5px',
+                    color: '#ff3366',
+                    padding: '8px 16px',
+                    cursor: 'pointer',
+                    marginBottom: '20px'
+                  }}
+                >
+                  ← Back to List
+                </button>
+
+                <div style={{
+                  background: 'rgba(255, 51, 102, 0.1)',
+                  border: '1px solid rgba(255, 51, 102, 0.3)',
+                  borderRadius: '10px',
+                  padding: '20px'
+                }}>
+                  <h3 style={{
+                    color: '#ff3366',
+                    marginBottom: '15px',
+                    fontSize: '1.4em'
+                  }}>
+                    📋 POST DETAILS
+                  </h3>
+
+                  <div style={{ marginBottom: '20px' }}>
+                    <div style={{ color: '#ffffff', fontSize: '1.2em', fontWeight: 'bold', marginBottom: '10px' }}>
+                      {rejectedPostsModal.selectedPost.title}
+                    </div>
+                    <div style={{ color: '#8892b0', fontSize: '0.9em', marginBottom: '10px' }}>
+                      By u/{rejectedPostsModal.selectedPost.author} • {new Date(rejectedPostsModal.selectedPost.created_utc).toLocaleString()}
+                    </div>
+                    {rejectedPostsModal.selectedPost.body && (
+                      <div style={{
+                        background: 'rgba(255, 255, 255, 0.05)',
+                        borderRadius: '5px',
+                        padding: '15px',
+                        color: '#ffffff',
+                        lineHeight: '1.6',
+                        maxHeight: '300px',
+                        overflow: 'auto',
+                        whiteSpace: 'pre-wrap',
+                        wordBreak: 'break-word',
+                        marginBottom: '20px'
+                      }}>
+                        {rejectedPostsModal.selectedPost.body}
+                      </div>
+                    )}
+                  </div>
+
+                  <h4 style={{
+                    color: '#ff3366',
+                    marginBottom: '15px',
+                    fontSize: '1.2em'
+                  }}>
+                    🚫 REJECTION REASONING
+                  </h4>
+
+                  <div style={{
+                    background: 'rgba(0, 0, 0, 0.3)',
+                    border: '1px solid rgba(255, 51, 102, 0.3)',
+                    borderRadius: '8px',
+                    padding: '15px',
+                    color: '#ffffff',
+                    lineHeight: '1.6'
+                  }}>
+                    {rejectedPostsModal.selectedPost.rejection_reasoning}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              /* Posts List View */
+              <div style={{
+                display: 'grid',
+                gap: '15px',
+                maxHeight: '500px',
+                overflow: 'auto'
+              }}>
+                {rejectedPostsModal.posts.length === 0 ? (
+                  <div style={{
+                    textAlign: 'center',
+                    color: '#ffffff',
+                    fontSize: '1.2em',
+                    padding: '50px'
+                  }}>
+                    No rejected posts found
+                  </div>
+                ) : (
+                  rejectedPostsModal.posts.map((post: any) => (
+                    <div
+                      key={post.id}
+                      onClick={() => setRejectedPostsModal(prev => ({...prev, selectedPost: post}))}
+                      style={{
+                        background: 'rgba(255, 51, 102, 0.1)',
+                        border: '1px solid rgba(255, 51, 102, 0.3)',
+                        borderRadius: '10px',
+                        padding: '20px',
+                        cursor: 'pointer',
+                        transition: 'all 0.2s ease'
+                      }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.background = 'rgba(255, 51, 102, 0.2)'
+                        e.currentTarget.style.transform = 'scale(1.02)'
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.background = 'rgba(255, 51, 102, 0.1)'
+                        e.currentTarget.style.transform = 'scale(1)'
+                      }}
+                    >
+                      <div style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'flex-start',
+                        marginBottom: '10px'
+                      }}>
+                        <h4 style={{
+                          color: '#ffffff',
+                          fontSize: '1.1em',
+                          margin: 0,
+                          flex: 1,
+                          lineHeight: '1.4'
+                        }}>
+                          {post.title}
+                        </h4>
+                        <span style={{
+                          background: 'rgba(255, 51, 102, 0.2)',
+                          color: '#ff3366',
+                          padding: '4px 8px',
+                          borderRadius: '12px',
+                          fontSize: '0.8em',
+                          marginLeft: '10px',
+                          whiteSpace: 'nowrap'
+                        }}>
+                          REJECTED
+                        </span>
+                      </div>
+
+                      <div style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        fontSize: '0.9em',
+                        color: '#8892b0'
+                      }}>
+                        <span>
+                          by u/{post.author}
+                        </span>
+                        <span>
+                          {new Date(post.created_utc).toLocaleString()}
+                        </span>
+                      </div>
+
+                      {/* Rejection reason preview */}
+                      <div style={{
+                        marginTop: '10px',
+                        fontSize: '0.9em',
+                        color: '#ffffff',
+                        opacity: 0.8,
+                        lineHeight: '1.4'
+                      }}>
+                        {post.rejection_reasoning.length > 150
+                          ? `${post.rejection_reasoning.substring(0, 150)}...`
+                          : post.rejection_reasoning}
+                      </div>
+
+                      <div style={{
+                        marginTop: '10px',
+                        fontSize: '0.8em',
+                        color: '#ff3366',
+                        textAlign: 'right'
+                      }}>
+                        👆 Click to view full details
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            )}
+
+            <div style={{
+              marginTop: '25px',
+              textAlign: 'center'
+            }}>
+              <button
+                onClick={() => setRejectedPostsModal({visible: false, posts: [], selectedPost: null})}
+                style={{
+                  ...synthwaveStyles.button,
+                  background: 'linear-gradient(45deg, #ff3366, #ff006e)',
                   padding: '12px 30px'
                 }}
                 className="synthwave-button"

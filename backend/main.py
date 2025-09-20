@@ -542,6 +542,64 @@ async def get_post_results(post_id: int):
         raise HTTPException(status_code=500, detail=f"Failed to get post results: {str(e)}")
 
 
+@app.get("/queue/rejected")
+async def get_rejected_posts():
+    """Get all posts that were rejected during triage with their rejection reasoning"""
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            # Get rejected posts with their triage results
+            cur.execute("""
+                SELECT
+                    p.id,
+                    p.title,
+                    p.author,
+                    p.url,
+                    p.body,
+                    p.created_utc,
+                    p.inserted_at,
+                    qr.content as triage_result
+                FROM posts p
+                LEFT JOIN queue_results qr ON p.id = qr.post_id AND qr.stage = 'triage'
+                WHERE p.queue_stage = 'rejected' AND p.queue_status = 'rejected'
+                ORDER BY p.inserted_at DESC
+            """)
+
+            rejected_posts = []
+            for row in cur.fetchall():
+                post_id, title, author, url, body, created_utc, inserted_at, triage_result = row
+
+                # Extract rejection reasoning from triage result
+                rejection_reasoning = "No reasoning available"
+                if triage_result and isinstance(triage_result, dict):
+                    content = triage_result.get('content', {})
+                    if isinstance(content, dict):
+                        rejection_reasoning = content.get('reasoning', 'No reasoning available')
+
+                rejected_posts.append({
+                    "id": post_id,
+                    "title": title,
+                    "author": author,
+                    "url": url,
+                    "body": body,
+                    "created_utc": created_utc.isoformat() if created_utc else None,
+                    "inserted_at": inserted_at.isoformat() if inserted_at else None,
+                    "rejection_reasoning": rejection_reasoning,
+                    "triage_result": triage_result
+                })
+
+        conn.close()
+
+        return {
+            "rejected_posts": rejected_posts,
+            "total_count": len(rejected_posts),
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get rejected posts: {str(e)}")
+
+
 @app.post("/queue/pause/{stage}")
 async def pause_queue(stage: str):
     """Pause processing for a specific queue stage"""
@@ -1171,9 +1229,9 @@ async def get_completed_editorial_posts():
     try:
         conn = get_db_connection()
         with conn.cursor() as cur:
-            # Get posts that completed editorial stage
+            # Get posts that completed editorial stage or are in post_queue
             cur.execute("""
-                SELECT DISTINCT
+                SELECT
                     p.id,
                     p.reddit_id,
                     p.title,
@@ -1184,11 +1242,8 @@ async def get_completed_editorial_posts():
                     p.queue_stage,
                     p.queue_status
                 FROM posts p
-                INNER JOIN queue_results qr ON p.id = qr.post_id
-                WHERE qr.stage = 'editorial'
-                AND qr.success = true
-                AND p.queue_stage = 'editorial'
-                AND p.queue_status = 'completed'
+                WHERE (p.queue_stage = 'editorial' AND p.queue_status = 'completed')
+                   OR (p.queue_stage = 'post_queue' AND p.queue_status = 'pending')
                 ORDER BY p.created_utc DESC
                 LIMIT 50
             """)

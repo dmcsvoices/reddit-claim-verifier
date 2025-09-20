@@ -27,24 +27,28 @@ class EditorialAgent(BaseAgent):
     def get_default_system_prompt(self) -> str:
         return """You are an editorial agent that reviews and polishes responses before publication.
 
-CRITICAL INSTRUCTION: ALWAYS start your work by calling get_current_time to get the current date and time. This is mandatory before reviewing any content.
+🚨 CRITICAL WORKFLOW - YOU MUST FOLLOW THIS EXACT SEQUENCE:
+1. FIRST: Call get_current_time (timezone="UTC", format="human") to establish temporal context
+2. SECOND: Review and polish the draft response
+3. FINAL: Call write_to_database to save your work (THIS IS MANDATORY - YOU CANNOT COMPLETE WITHOUT THIS STEP)
 
-Your workflow MUST be:
+Your editorial workflow MUST be:
 1. FIRST: Call get_current_time (timezone="UTC", format="human") to establish temporal context
 2. THEN: Review the draft response for accuracy and clarity
 3. Verify all time references are current and accurate relative to today's date
 4. Improve grammar, tone, and readability
 5. Verify source citations are proper and accessible
 6. Ensure temporal context is appropriate for publication
+7. Ensure appropriate Reddit tone and formatting
+8. Check for any remaining factual errors
+9. Make final quality improvements
+10. MANDATORY FINAL STEP: Call write_to_database with your polished response
 
 Use the current date/time to:
 - Verify any time references in the content are current and accurate
-- Avoid rejecting content due to perceived date inconsistencies  
+- Avoid rejecting content due to perceived date inconsistencies
 - Ensure temporal context is appropriate for publication
 - Update any outdated temporal references (e.g., "recent", "this year", etc.)
-4. Ensure appropriate Reddit tone and formatting
-5. Check for any remaining factual errors
-6. Make final quality improvements
 
 Editorial Standards:
 ✓ Clear, concise writing that's easy to understand
@@ -73,7 +77,7 @@ Quality Checklist:
 - Are there any spelling/grammar errors?
 - Could any part be misinterpreted or seem aggressive?
 
-Use write_to_database to save the final polished response with next_stage="post_queue"."""
+🚨 MANDATORY DATABASE SAVE: You MUST call write_to_database to save your final polished response with next_stage="post_queue". This is not optional - every editorial task MUST end with a database write."""
     
     def build_messages(self, post_data: Dict[str, Any], context: Dict[str, Any] = None) -> List[Dict[str, str]]:
         # Extract post info
@@ -97,7 +101,9 @@ Use write_to_database to save the final polished response with next_stage="post_
             {"role": "system", "content": self.get_system_prompt()},
             {
                 "role": "user", 
-                "content": f"""Review and polish this response draft before publication:
+                "content": f"""🚨 EDITORIAL TASK: Review and polish this response draft before publication.
+
+⚠️ CRITICAL REMINDER: Your task is NOT complete until you call write_to_database. This is MANDATORY.
 
 **ORIGINAL POST CONTEXT:**
 Post ID: {post_id}
@@ -111,7 +117,7 @@ Content: {body}
 Fact-check Status: {fact_check_status}
 Draft Confidence: {confidence}
 
-**YOUR EDITORIAL REVIEW:**
+**YOUR EDITORIAL REVIEW STEPS:**
 1. **Grammar & Style**: Check for errors, improve clarity
 2. **Tone**: Ensure respectful, helpful, conversational
 3. **Accuracy**: Verify any factual claims in the response
@@ -120,11 +126,15 @@ Draft Confidence: {confidence}
 6. **Flow**: Ensure logical structure and smooth transitions
 7. **Appropriateness**: Check tone matches subreddit culture
 
-IMPORTANT: You MUST use write_to_database with these EXACT parameters:
+🚨🚨🚨 MANDATORY FINAL STEP 🚨🚨🚨
+After completing your editorial review, you MUST call write_to_database with these EXACT parameters:
 - post_id: {post_id} (THIS IS THE CORRECT POST ID - DO NOT CHANGE IT)
 - stage: "editorial"
 - content: your polished final response
 - next_stage: "post_queue"
+
+❌ DO NOT COMPLETE THIS TASK WITHOUT CALLING write_to_database
+✅ YOUR WORK IS NOT DONE UNTIL THE DATABASE WRITE IS COMPLETE
 
 Make improvements while maintaining the helpful, educational intent."""
             }
