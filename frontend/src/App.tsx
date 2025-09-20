@@ -631,9 +631,6 @@ function App() {
               </span>
             )}
           </div>
-          <button style={synthwaveStyles.button} onClick={checkHealth} className="synthwave-button">
-            REFRESH STATUS
-          </button>
         </div>
         
         {/* Tab Content */}
@@ -875,11 +872,23 @@ function App() {
             <div style={synthwaveStyles.card} className="synthwave-card">
               <h2 style={synthwaveStyles.cardTitle}>📋 RECENT POSTS DATABASE</h2>
               <div style={{ display: 'flex', gap: '15px', marginBottom: '20px' }}>
-                <button onClick={getPosts} style={synthwaveStyles.button} className="synthwave-button">
+                <button
+                  onClick={async () => {
+                    console.log('Refresh Posts button clicked');
+                    try {
+                      await getPosts();
+                      console.log('Posts refreshed successfully');
+                    } catch (error) {
+                      console.error('Error refreshing posts:', error);
+                    }
+                  }}
+                  style={{
+                    ...synthwaveStyles.button,
+                    cursor: 'pointer'
+                  }}
+                  className="synthwave-button"
+                >
                   🔄 REFRESH POSTS
-                </button>
-                <button onClick={insertDummy} style={synthwaveStyles.button} className="synthwave-button">
-                  ➕ INSERT TEST POST
                 </button>
               </div>
               
@@ -1012,17 +1021,6 @@ function App() {
                 </div>
               )}
               
-              <button 
-                onClick={() => { getQueueStatus(); getQueueStats(); }}
-                style={{
-                  ...synthwaveStyles.button,
-                  marginTop: '20px',
-                  background: 'linear-gradient(45deg, #8338ec, #3a86ff)'
-                }}
-                className="synthwave-button"
-              >
-                🔄 REFRESH DASHBOARD
-              </button>
             </div>
             
             {/* Queue Statistics */}
@@ -1202,6 +1200,31 @@ function App() {
                       )
                     })
                   })()}
+                </div>
+
+                {/* Refresh Button for Queue Statistics */}
+                <div style={{ textAlign: 'center', marginTop: '20px' }}>
+                  <button
+                    onClick={async () => {
+                      console.log('Refresh Statistics button clicked');
+                      try {
+                        await getQueueStats();
+                        console.log('Queue stats refreshed successfully');
+                      } catch (error) {
+                        console.error('Error refreshing queue stats:', error);
+                      }
+                    }}
+                    style={{
+                      ...synthwaveStyles.button,
+                      background: 'linear-gradient(45deg, #00ff88, #3a86ff)',
+                      padding: '12px 24px',
+                      fontSize: '1em',
+                      cursor: 'pointer'
+                    }}
+                    className="synthwave-button"
+                  >
+                    🔄 REFRESH STATISTICS
+                  </button>
                 </div>
               </div>
             )}
@@ -1558,7 +1581,23 @@ function App() {
             {/* System Prompts Management */}
             <div style={synthwaveStyles.card} className="synthwave-card">
               <h2 style={synthwaveStyles.cardTitle}>📝 SYSTEM PROMPT MANAGEMENT</h2>
-              {agentPrompts.map((prompt, index) => (
+              {(() => {
+                // Define the correct pipeline order
+                const stageOrder = ['triage', 'research', 'response', 'editorial'];
+
+                // Sort prompts according to the pipeline order
+                const sortedPrompts = [...agentPrompts].sort((a, b) => {
+                  const indexA = stageOrder.indexOf(a.agent_stage);
+                  const indexB = stageOrder.indexOf(b.agent_stage);
+
+                  // If stage not found in order, put it at the end
+                  if (indexA === -1) return 1;
+                  if (indexB === -1) return -1;
+
+                  return indexA - indexB;
+                });
+
+                return sortedPrompts.map((prompt, index) => (
                 <div key={index} style={{
                   background: 'rgba(131, 56, 236, 0.1)',
                   border: '1px solid rgba(131, 56, 236, 0.3)',
@@ -1644,8 +1683,9 @@ function App() {
                     </div>
                   )}
                 </div>
-              ))}
-              
+              ));
+              })()}
+
               <button 
                 onClick={refreshAgentData}
                 style={{
