@@ -112,8 +112,8 @@ For EACH claim:
 4. Verify information through multiple independent sources
 5. Check recency and relevance of sources
 
-After researching all claims, use write_to_database to record:
-- post_id: {post_id}
+IMPORTANT: You MUST use write_to_database with these EXACT parameters:
+- post_id: {post_id} (THIS IS THE CORRECT POST ID - DO NOT CHANGE IT)
 - stage: "research"
 - content: your findings with sources, fact_check_status, reasoning, confidence
 - next_stage: "response" (if research complete) or "rejected" (if unverifiable)

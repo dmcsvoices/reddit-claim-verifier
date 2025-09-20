@@ -83,19 +83,66 @@ if os.getenv("USE_MOCK_AGENTS", "false").lower() == "true":
 
 class AgentFactory:
     """Factory for creating and managing agent instances"""
-    
+
+    @staticmethod
+    def load_config_from_database(stage: str) -> dict:
+        """Load agent configuration from database, falling back to defaults"""
+        try:
+            import psycopg
+
+            connection_params = {
+                "host": os.getenv("DB_HOST", "localhost"),
+                "port": int(os.getenv("DB_PORT", "5432")),
+                "dbname": os.getenv("DB_NAME", "redditmon"),
+                "user": os.getenv("DB_USER", "redditmon"),
+                "password": os.getenv("DB_PASSWORD", "supersecret")
+            }
+
+            with psycopg.connect(**connection_params) as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT model, endpoint, timeout, max_concurrent
+                        FROM agent_config
+                        WHERE agent_stage = %s
+                    """, (stage,))
+
+                    result = cur.fetchone()
+                    if result:
+                        print(f"📊 Loaded {stage} config from database: model={result[0]}, endpoint={result[1]}")
+                        return {
+                            "model": result[0],
+                            "endpoint": result[1],
+                            "timeout": result[2],
+                            "max_concurrent": result[3]
+                        }
+        except Exception as e:
+            print(f"⚠️  Failed to load {stage} config from database: {e}")
+
+        # Fall back to default configuration
+        print(f"📋 Using default config for {stage}")
+        return None
+
     @staticmethod
     def create_agent(stage: str) -> BaseAgent:
         """Create an agent instance for the given stage"""
         if stage not in AGENT_CONFIG:
             raise ValueError(f"Unknown agent stage: {stage}. Available: {list(AGENT_CONFIG.keys())}")
-        
-        config = AGENT_CONFIG[stage]
+
+        # Try to load configuration from database first
+        db_config = AgentFactory.load_config_from_database(stage)
+
+        # Use database config if available, otherwise fall back to defaults
+        if db_config:
+            config = AGENT_CONFIG[stage].copy()  # Start with defaults
+            config.update(db_config)  # Override with database values
+        else:
+            config = AGENT_CONFIG[stage]
+
         agent_class = config["class"]
-        
+
         if agent_class == MockAgent:
             return MockAgent(stage)
-        
+
         return agent_class(
             model=config["model"],
             endpoint=config["endpoint"],

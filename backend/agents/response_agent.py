@@ -130,11 +130,13 @@ Write a helpful Reddit comment that:
 
 The response should be informative but not preachy, helpful but not condescending.
 
-Use write_to_database with:
-- post_id: {post_id}
+IMPORTANT: You MUST use write_to_database with these EXACT parameters:
+- post_id: {post_id} (THIS IS THE CORRECT POST ID - DO NOT CHANGE IT)
 - stage: "response"
 - content: your draft response with confidence score
 - next_stage: "editorial"
+
+The post_id {post_id} is the correct ID for the post you are processing. Do not use any other post ID.
 
 Generate the response now."""
             }

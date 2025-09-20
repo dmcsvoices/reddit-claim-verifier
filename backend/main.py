@@ -9,7 +9,9 @@ from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
-load_dotenv("../.env")
+# Try both root level and parent directory for compatibility
+load_dotenv(".env")  # For when running from project root
+load_dotenv("../.env")  # For when running from backend directory
 
 # Import queue management system
 import sys
@@ -20,7 +22,7 @@ current_dir = Path(__file__).parent
 if str(current_dir) not in sys.path:
     sys.path.append(str(current_dir))
 
-from queue_management.queue_manager import start_queue_manager, stop_queue_manager, get_queue_status, reload_queue_agent_configs
+from queue_management.queue_manager import start_queue_manager, stop_queue_manager, get_queue_status
 
 async def setup_database_schema():
     """Setup database schema for queue management"""
@@ -92,10 +94,50 @@ async def setup_database_schema():
                     updated_at TIMESTAMP DEFAULT NOW()
                 );
             """)
-            
-            # Initialize queue states if empty
+
+            # Create queue_settings table for retry configuration
             cur.execute("""
-                INSERT INTO queue_state (stage, is_paused) 
+                CREATE TABLE IF NOT EXISTS queue_settings (
+                    id SERIAL PRIMARY KEY,
+                    setting_key VARCHAR(100) UNIQUE NOT NULL,
+                    setting_value TEXT NOT NULL,
+                    description TEXT,
+                    updated_at TIMESTAMP DEFAULT NOW()
+                );
+            """)
+
+            # Insert default retry settings
+            cur.execute("""
+                INSERT INTO queue_settings (setting_key, setting_value, description)
+                VALUES
+                    ('retry_timeout_seconds', '300', 'How long to wait before retrying failed posts (seconds)'),
+                    ('max_retry_attempts', '3', 'Maximum number of retry attempts per post'),
+                    ('stuck_post_threshold_minutes', '30', 'Minutes before a post is considered stuck')
+                ON CONFLICT (setting_key) DO NOTHING;
+            """)
+
+            # Add retry tracking columns to posts table if they don't exist
+            cur.execute("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'posts' AND column_name = 'retry_count') THEN
+                        ALTER TABLE posts ADD COLUMN retry_count INTEGER DEFAULT 0;
+                    END IF;
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'posts' AND column_name = 'last_retry_at') THEN
+                        ALTER TABLE posts ADD COLUMN last_retry_at TIMESTAMP;
+                    END IF;
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'posts' AND column_name = 'last_error_message') THEN
+                        ALTER TABLE posts ADD COLUMN last_error_message TEXT;
+                    END IF;
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'posts' AND column_name = 'processing_started_at') THEN
+                        ALTER TABLE posts ADD COLUMN processing_started_at TIMESTAMP;
+                    END IF;
+                END $$;
+            """)
+            
+            # Initialize queue states if empty (preserve existing pause states)
+            cur.execute("""
+                INSERT INTO queue_state (stage, is_paused)
                 VALUES ('triage', false), ('research', false), ('response', false), ('editorial', false)
                 ON CONFLICT (stage) DO NOTHING;
             """)
@@ -172,98 +214,7 @@ def get_db_connection():
         password=os.getenv("DB_PASSWORD", "supersecret")
     )
 
-@app.on_event("startup")
-def startup():
-    # Create tables with queue management columns
-    conn = get_db_connection()
-    with conn.cursor() as cur:
-        # Enhanced posts table with queue management columns
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS posts (
-                id SERIAL PRIMARY KEY,
-                reddit_id TEXT UNIQUE NOT NULL,
-                title TEXT,
-                author TEXT,
-                created_utc TIMESTAMPTZ,
-                url TEXT,
-                body TEXT,
-                inserted_at TIMESTAMPTZ DEFAULT NOW(),
-                -- Queue management columns
-                queue_stage VARCHAR(20) DEFAULT 'triage',
-                queue_status VARCHAR(20) DEFAULT 'pending',
-                assigned_to VARCHAR(50) NULL,
-                assigned_at TIMESTAMPTZ NULL,
-                processed_at TIMESTAMPTZ NULL,
-                retry_count INTEGER DEFAULT 0,
-                metadata JSONB DEFAULT '{}'
-            )
-        """)
-        
-        # Queue results table
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS queue_results (
-                id SERIAL PRIMARY KEY,
-                post_id INTEGER REFERENCES posts(id),
-                stage VARCHAR(20) NOT NULL,
-                result JSONB NOT NULL,
-                created_at TIMESTAMPTZ DEFAULT NOW()
-            )
-        """)
-        
-        # LLM endpoints tracking table
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS llm_endpoints (
-                id SERIAL PRIMARY KEY,
-                name VARCHAR(50) UNIQUE NOT NULL,
-                url VARCHAR(200) NOT NULL,
-                capabilities JSONB NOT NULL,
-                max_concurrent INTEGER DEFAULT 1,
-                current_load INTEGER DEFAULT 0
-            )
-        """)
-        
-        # Agent system prompts management table  
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS agent_prompts (
-                id SERIAL PRIMARY KEY,
-                agent_stage VARCHAR(20) UNIQUE NOT NULL,
-                system_prompt TEXT NOT NULL,
-                version INTEGER DEFAULT 1,
-                created_at TIMESTAMPTZ DEFAULT NOW(),
-                updated_at TIMESTAMPTZ DEFAULT NOW()
-            )
-        """)
-        
-        # Queue state management table
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS queue_state (
-                id SERIAL PRIMARY KEY,
-                stage VARCHAR(20) UNIQUE NOT NULL,
-                is_paused BOOLEAN DEFAULT FALSE,
-                max_concurrent INTEGER DEFAULT 1,
-                poll_interval INTEGER DEFAULT 30,
-                updated_at TIMESTAMPTZ DEFAULT NOW()
-            )
-        """)
-        
-        # Add indexes for queue performance
-        cur.execute("""
-            CREATE INDEX IF NOT EXISTS idx_posts_queue_stage_status 
-            ON posts (queue_stage, queue_status)
-        """)
-        
-        cur.execute("""
-            CREATE INDEX IF NOT EXISTS idx_posts_assigned_at 
-            ON posts (assigned_at) WHERE assigned_at IS NOT NULL
-        """)
-        
-        cur.execute("""
-            CREATE INDEX IF NOT EXISTS idx_queue_results_post_stage 
-            ON queue_results (post_id, stage)
-        """)
-        
-        conn.commit()
-    conn.close()
+# Removed deprecated @app.on_event("startup") - database setup now handled in lifespan
 
 @app.get("/health")
 def health():
@@ -486,61 +437,114 @@ async def queue_stats():
         raise HTTPException(status_code=500, detail=f"Failed to get queue stats: {str(e)}")
 
 
+@app.get("/queue/pending/{stage}")
+async def get_pending_posts(stage: str):
+    """Get detailed list of pending posts for a specific stage"""
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            # Get pending posts with titles and metadata for the specified stage
+            cur.execute("""
+                SELECT
+                    id,
+                    reddit_id,
+                    title,
+                    author,
+                    created_utc,
+                    retry_count,
+                    processing_started_at,
+                    last_retry_at
+                FROM posts
+                WHERE queue_stage = %s AND queue_status = 'pending'
+                ORDER BY created_utc ASC
+            """, (stage,))
+
+            pending_posts = []
+            for row in cur.fetchall():
+                pending_posts.append({
+                    "id": row[0],
+                    "reddit_id": row[1],
+                    "title": row[2],
+                    "author": row[3],
+                    "created_utc": row[4].isoformat() if row[4] else None,
+                    "retry_count": row[5],
+                    "processing_started_at": row[6].isoformat() if row[6] else None,
+                    "last_retry_at": row[7].isoformat() if row[7] else None
+                })
+
+        conn.close()
+        return {
+            "stage": stage,
+            "pending_posts": pending_posts,
+            "count": len(pending_posts),
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get pending posts: {str(e)}")
+
+
 @app.post("/queue/pause/{stage}")
 async def pause_queue(stage: str):
     """Pause processing for a specific queue stage"""
+    print(f"🛑 Pausing queue stage: {stage}")
     try:
         conn = get_db_connection()
         with conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO queue_state (stage, is_paused, updated_at)
                 VALUES (%s, TRUE, NOW())
-                ON CONFLICT (stage) DO UPDATE SET 
+                ON CONFLICT (stage) DO UPDATE SET
                     is_paused = TRUE,
                     updated_at = NOW()
                 RETURNING stage, is_paused
             """, (stage,))
-            
+
             result = cur.fetchone()
             conn.commit()
         conn.close()
-        
+
+        print(f"✅ Queue stage '{stage}' successfully paused")
         return {
             "stage": result[0],
             "is_paused": result[1],
             "message": f"Queue stage '{stage}' has been paused"
         }
-        
+
     except Exception as e:
+        print(f"❌ Failed to pause queue stage '{stage}': {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to pause queue: {str(e)}")
 
 
 @app.post("/queue/resume/{stage}")
 async def resume_queue(stage: str):
     """Resume processing for a specific queue stage"""
+    print(f"▶️ Resuming queue stage: {stage}")
     try:
         conn = get_db_connection()
         with conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO queue_state (stage, is_paused, updated_at)
                 VALUES (%s, FALSE, NOW())
-                ON CONFLICT (stage) DO UPDATE SET 
+                ON CONFLICT (stage) DO UPDATE SET
                     is_paused = FALSE,
                     updated_at = NOW()
                 RETURNING stage, is_paused
             """, (stage,))
-            
+
             result = cur.fetchone()
             conn.commit()
         conn.close()
-        
+
+        print(f"✅ Queue stage '{stage}' successfully resumed")
         return {
             "stage": result[0],
             "is_paused": result[1],
             "message": f"Queue stage '{stage}' has been resumed"
         }
-        
+
     except Exception as e:
+        print(f"❌ Failed to resume queue stage '{stage}': {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to resume queue: {str(e)}")
 
 
@@ -548,14 +552,199 @@ async def resume_queue(stage: str):
 async def reload_agent_configurations():
     """Reload agent configurations from database"""
     try:
-        await reload_queue_agent_configs()
+        from queue_management.queue_manager import queue_manager
+
+        print("🔄 Reloading agent configurations from database...")
+
+        # Re-initialize agents with database configurations
+        queue_manager._initialize_agents()
+
+        print("✅ Agent configurations reloaded successfully")
+
         return {
             "success": True,
-            "message": "Agent configurations reloaded successfully"
+            "message": "Agent configurations reloaded from database successfully"
         }
-        
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to reload agent configurations: {str(e)}")
+
+
+@app.get("/queue/stuck-posts")
+async def detect_stuck_posts():
+    """Detect posts that have been stuck in processing for too long"""
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            # Get stuck post threshold from settings
+            cur.execute("SELECT setting_value FROM queue_settings WHERE setting_key = 'stuck_post_threshold_minutes'")
+            threshold_result = cur.fetchone()
+            threshold_minutes = int(threshold_result[0]) if threshold_result else 30
+
+            # Find stuck posts - processing for longer than threshold or failed with retries available
+            cur.execute("""
+                SELECT id, reddit_id, title, queue_stage, queue_status,
+                       retry_count, last_error_message, processing_started_at,
+                       EXTRACT(EPOCH FROM (NOW() - processing_started_at))/60 as minutes_stuck
+                FROM posts
+                WHERE
+                    (queue_status = 'processing' AND processing_started_at IS NOT NULL
+                     AND processing_started_at < NOW() - INTERVAL '%s minutes')
+                    OR
+                    (queue_status = 'failed' AND retry_count < (
+                        SELECT CAST(setting_value AS INTEGER) FROM queue_settings
+                        WHERE setting_key = 'max_retry_attempts'
+                    ))
+                ORDER BY processing_started_at ASC NULLS LAST
+            """, (threshold_minutes,))
+
+            stuck_posts = []
+            for row in cur.fetchall():
+                stuck_posts.append({
+                    "id": row[0],
+                    "reddit_id": row[1],
+                    "title": row[2],
+                    "queue_stage": row[3],
+                    "queue_status": row[4],
+                    "retry_count": row[5],
+                    "last_error_message": row[6],
+                    "processing_started_at": row[7].isoformat() if row[7] else None,
+                    "minutes_stuck": float(row[8]) if row[8] else None
+                })
+
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            print(f"🔍 [{timestamp}] Detected {len(stuck_posts)} stuck posts (threshold: {threshold_minutes} min)")
+            for post in stuck_posts:
+                print(f"   📋 Post {post['id']}: {post['queue_status']} retries: {post['retry_count']}")
+
+            return {
+                "success": True,
+                "stuck_posts": stuck_posts,
+                "threshold_minutes": threshold_minutes,
+                "total_stuck": len(stuck_posts)
+            }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to detect stuck posts: {str(e)}")
+
+
+@app.post("/queue/reset-stuck-posts")
+async def reset_stuck_posts():
+    """Reset stuck posts back to pending status for retry"""
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            # Get stuck post threshold from settings (same as detect)
+            cur.execute("SELECT setting_value FROM queue_settings WHERE setting_key = 'stuck_post_threshold_minutes'")
+            threshold_result = cur.fetchone()
+            threshold_minutes = int(threshold_result[0]) if threshold_result else 30
+
+            # Get retry settings
+            cur.execute("SELECT setting_value FROM queue_settings WHERE setting_key = 'max_retry_attempts'")
+            max_retries_result = cur.fetchone()
+            max_retries = int(max_retries_result[0]) if max_retries_result else 3
+
+            # Reset stuck/failed posts that haven't exceeded retry limit (use same logic as detect)
+            # Don't set last_retry_at for manual resets - they should be immediately available
+            cur.execute("""
+                UPDATE posts
+                SET
+                    queue_status = 'pending',
+                    processing_started_at = NULL,
+                    last_retry_at = NULL,
+                    retry_count = retry_count + 1
+                WHERE
+                    (queue_status = 'processing' AND processing_started_at IS NOT NULL
+                     AND processing_started_at < NOW() - INTERVAL '%s minutes')
+                    OR
+                    (queue_status = 'failed' AND retry_count < %s)
+                RETURNING id, reddit_id, queue_stage, retry_count
+            """, (threshold_minutes, max_retries))
+
+            reset_posts = []
+            for row in cur.fetchall():
+                reset_posts.append({
+                    "id": row[0],
+                    "reddit_id": row[1],
+                    "queue_stage": row[2],
+                    "retry_count": row[3]
+                })
+
+            conn.commit()
+
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            print(f"🔄 [{timestamp}] Reset {len(reset_posts)} stuck posts for retry (threshold: {threshold_minutes} min, max_retries: {max_retries})")
+            for post in reset_posts:
+                print(f"   📝 Post {post['id']}: {post['reddit_id']} -> retry #{post['retry_count']}")
+
+            return {
+                "success": True,
+                "reset_posts": reset_posts,
+                "total_reset": len(reset_posts)
+            }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to reset stuck posts: {str(e)}")
+
+
+@app.get("/queue/settings")
+async def get_queue_settings():
+    """Get queue retry settings"""
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            cur.execute("SELECT setting_key, setting_value, description FROM queue_settings ORDER BY setting_key")
+
+            settings = {}
+            for row in cur.fetchall():
+                settings[row[0]] = {
+                    "value": row[1],
+                    "description": row[2]
+                }
+
+            return {
+                "success": True,
+                "settings": settings
+            }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get queue settings: {str(e)}")
+
+
+class QueueSettingUpdate(BaseModel):
+    setting_key: str
+    setting_value: str
+
+@app.post("/queue/settings")
+async def update_queue_setting(setting: QueueSettingUpdate):
+    """Update a queue retry setting"""
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE queue_settings
+                SET setting_value = %s, updated_at = NOW()
+                WHERE setting_key = %s
+                RETURNING setting_key, setting_value
+            """, (setting.setting_value, setting.setting_key))
+
+            result = cur.fetchone()
+            if not result:
+                raise HTTPException(status_code=404, detail=f"Setting '{setting.setting_key}' not found")
+
+            conn.commit()
+
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            print(f"⚙️ [{timestamp}] Updated queue setting: {setting.setting_key} = {setting.setting_value}")
+
+            return {
+                "success": True,
+                "setting_key": result[0],
+                "setting_value": result[1]
+            }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update queue setting: {str(e)}")
 
 
 # Agent System Prompt Management

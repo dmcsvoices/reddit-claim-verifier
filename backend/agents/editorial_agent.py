@@ -120,8 +120,8 @@ Draft Confidence: {confidence}
 6. **Flow**: Ensure logical structure and smooth transitions
 7. **Appropriateness**: Check tone matches subreddit culture
 
-After editing, use write_to_database with:
-- post_id: {post_id}
+IMPORTANT: You MUST use write_to_database with these EXACT parameters:
+- post_id: {post_id} (THIS IS THE CORRECT POST ID - DO NOT CHANGE IT)
 - stage: "editorial"
 - content: your polished final response
 - next_stage: "post_queue"

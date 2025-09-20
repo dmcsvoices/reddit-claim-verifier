@@ -30,7 +30,13 @@ function App() {
   const [queueStatus, setQueueStatus] = useState<any>(null)
   const [queueStats, setQueueStats] = useState<any>(null)
   const [queueStates, setQueueStates] = useState<{[key: string]: boolean}>({})
-  
+  const [queueSettings, setQueueSettings] = useState<any>(null)
+  const [pendingPostsModal, setPendingPostsModal] = useState<{visible: boolean, stage: string, posts: any[]}>({
+    visible: false,
+    stage: '',
+    posts: []
+  })
+
   // Agent Backend state  
   const [availableModels, setAvailableModels] = useState<{[key: string]: string[]}>({}) 
   
@@ -242,6 +248,30 @@ function App() {
       setQueueStats(data)
     } catch (error) {
       console.error('Failed to get queue stats:', error)
+    }
+  }
+
+  const getPendingPosts = async (stage: string) => {
+    try {
+      const response = await fetch(`${API_BASE}/queue/pending/${stage}`)
+      const data = await response.json()
+      setPendingPostsModal({
+        visible: true,
+        stage: stage,
+        posts: data.pending_posts || []
+      })
+    } catch (error) {
+      console.error('Failed to get pending posts:', error)
+    }
+  }
+
+  const getQueueSettings = async () => {
+    try {
+      const response = await fetch(`${API_BASE}/queue/settings`)
+      const data = await response.json()
+      setQueueSettings(data.settings || {})
+    } catch (error) {
+      console.error('Failed to get queue settings:', error)
     }
   }
 
@@ -526,6 +556,9 @@ function App() {
       getPosts()
       getAgentPrompts()
       getAgentConfig()
+      getQueueStatus()
+      getQueueStats()
+      getQueueSettings()
     }
     initializeData()
   }, [])
@@ -997,44 +1030,360 @@ function App() {
               <div style={synthwaveStyles.card} className="synthwave-card">
                 <h2 style={synthwaveStyles.cardTitle}>📊 QUEUE STATISTICS</h2>
                 <div style={synthwaveStyles.grid}>
-                  {queueStats.detailed_stats?.map((stat: any, index: number) => (
-                    <div key={index} style={{
-                      background: 'rgba(131, 56, 236, 0.1)',
-                      border: '1px solid rgba(131, 56, 236, 0.3)',
-                      borderRadius: '10px',
-                      padding: '20px'
-                    }}>
-                      <h4 style={{ color: '#8338ec', marginBottom: '15px', textTransform: 'uppercase' }}>
-                        {stat.stage} - {stat.status}
-                      </h4>
-                      
-                      <div style={{ display: 'grid', gap: '10px' }}>
-                        <div>
-                          <span style={{ color: '#ff006e' }}>Count:</span>
-                          <span style={{ color: '#ffffff', marginLeft: '10px', fontSize: '1.2em' }}>{stat.count}</span>
-                        </div>
-                        <div>
-                          <span style={{ color: '#ff006e' }}>Avg Retries:</span>
-                          <span style={{ color: '#ffffff', marginLeft: '10px' }}>{stat.avg_retries?.toFixed(2) || 0}</span>
-                        </div>
-                        {stat.oldest_post && (
-                          <div>
-                            <span style={{ color: '#ff006e' }}>Oldest:</span>
-                            <div style={{ color: '#3a86ff', fontSize: '0.9em', marginTop: '5px' }}>
-                              {new Date(stat.oldest_post).toLocaleString()}
+                  {(() => {
+                    // Define color schemes for each stage
+                    const stageColors = {
+                      'triage': { bg: 'rgba(255, 0, 110, 0.1)', border: '#ff006e', text: '#ff006e' },
+                      'research': { bg: 'rgba(131, 56, 236, 0.1)', border: '#8338ec', text: '#8338ec' },
+                      'response': { bg: 'rgba(58, 134, 255, 0.1)', border: '#3a86ff', text: '#3a86ff' },
+                      'editorial': { bg: 'rgba(0, 255, 136, 0.1)', border: '#00ff88', text: '#00ff88' },
+                      'post_queue': { bg: 'rgba(255, 140, 0, 0.1)', border: '#ff8c00', text: '#ff8c00' },
+                      'completed': { bg: 'rgba(46, 213, 115, 0.1)', border: '#2ed573', text: '#2ed573' },
+                      'rejected': { bg: 'rgba(255, 51, 102, 0.1)', border: '#ff3366', text: '#ff3366' }
+                    }
+
+                    // Group stats by stage
+                    const groupedStats: {[key: string]: any[]} = {}
+                    queueStats.detailed_stats?.forEach((stat: any) => {
+                      if (!groupedStats[stat.stage]) {
+                        groupedStats[stat.stage] = []
+                      }
+                      groupedStats[stat.stage].push(stat)
+                    })
+
+                    // Define the order of stages
+                    const stageOrder = ['triage', 'research', 'response', 'editorial']
+
+                    // Calculate totals for each stage in the specified order
+                    return stageOrder.filter(stage => groupedStats[stage]).map(stage => {
+                      const stats = groupedStats[stage]
+                      const colors = stageColors[stage as keyof typeof stageColors] || stageColors.triage
+                      const totalPosts = stats.reduce((sum, stat) => sum + stat.count, 0)
+                      const pendingPosts = stats.find(s => s.status === 'pending')?.count || 0
+                      const processingPosts = stats.find(s => s.status === 'processing')?.count || 0
+                      const completedPosts = stats.find(s => s.status === 'completed')?.count || 0
+                      const failedPosts = stats.find(s => s.status === 'failed')?.count || 0
+
+                      return (
+                        <div key={stage} style={{
+                          background: colors.bg,
+                          border: `2px solid ${colors.border}`,
+                          borderRadius: '15px',
+                          padding: '25px',
+                          boxShadow: `0 0 20px ${colors.border}40`
+                        }}>
+                          <h3 style={{
+                            color: colors.text,
+                            marginBottom: '20px',
+                            textTransform: 'uppercase',
+                            textAlign: 'center',
+                            fontSize: '1.3em',
+                            textShadow: `0 0 10px ${colors.border}`
+                          }}>
+                            🎯 {stage} STAGE
+                          </h3>
+
+                          {/* Total Posts Display */}
+                          <div style={{
+                            textAlign: 'center',
+                            marginBottom: '25px',
+                            padding: '15px',
+                            background: 'rgba(0, 0, 0, 0.3)',
+                            borderRadius: '10px'
+                          }}>
+                            <div style={{
+                              fontSize: '3em',
+                              color: colors.text,
+                              fontWeight: 'bold',
+                              textShadow: `0 0 15px ${colors.border}`
+                            }}>
+                              {totalPosts}
+                            </div>
+                            <div style={{ color: '#ffffff', fontSize: '1.1em' }}>
+                              Total Posts
                             </div>
                           </div>
-                        )}
-                      </div>
-                    </div>
-                  ))}
+
+                          {/* Breakdown by Status */}
+                          <div style={{ display: 'grid', gap: '12px' }}>
+                            {pendingPosts > 0 && (
+                              <div
+                                onClick={() => getPendingPosts(stage)}
+                                style={{
+                                  display: 'flex',
+                                  justifyContent: 'space-between',
+                                  alignItems: 'center',
+                                  background: 'rgba(255, 204, 0, 0.1)',
+                                  padding: '8px 12px',
+                                  borderRadius: '8px',
+                                  border: '1px solid rgba(255, 204, 0, 0.3)',
+                                  cursor: 'pointer',
+                                  transition: 'all 0.2s ease'
+                                }}
+                                onMouseEnter={(e) => {
+                                  e.currentTarget.style.background = 'rgba(255, 204, 0, 0.2)'
+                                  e.currentTarget.style.transform = 'scale(1.02)'
+                                }}
+                                onMouseLeave={(e) => {
+                                  e.currentTarget.style.background = 'rgba(255, 204, 0, 0.1)'
+                                  e.currentTarget.style.transform = 'scale(1)'
+                                }}>
+                                <span style={{ color: '#ffcc00', fontWeight: 'bold' }}>
+                                  {stage === 'triage' ? '⚡ New Posts:' :
+                                   stage === 'research' ? '🔍 Research Pending:' :
+                                   stage === 'response' ? '✍️ Response Pending:' :
+                                   stage === 'editorial' ? '📝 Editorial Pending:' : '⏳ Pending:'}
+                                </span>
+                                <span style={{
+                                  color: '#ffffff',
+                                  fontSize: '1.3em',
+                                  fontWeight: 'bold',
+                                  textShadow: '0 0 8px #ffcc00'
+                                }}>
+                                  {pendingPosts}
+                                </span>
+                              </div>
+                            )}
+                            {processingPosts > 0 && (
+                              <div style={{
+                                display: 'flex',
+                                justifyContent: 'space-between',
+                                alignItems: 'center',
+                                background: 'rgba(58, 134, 255, 0.1)',
+                                padding: '8px 12px',
+                                borderRadius: '8px',
+                                border: '1px solid rgba(58, 134, 255, 0.3)'
+                              }}>
+                                <span style={{ color: '#3a86ff', fontWeight: 'bold' }}>🔄 Processing:</span>
+                                <span style={{
+                                  color: '#ffffff',
+                                  fontSize: '1.2em',
+                                  fontWeight: 'bold',
+                                  textShadow: '0 0 8px #3a86ff'
+                                }}>
+                                  {processingPosts}
+                                </span>
+                              </div>
+                            )}
+                            {completedPosts > 0 && (
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <span style={{ color: '#00ff88' }}>✅ Completed:</span>
+                                <span style={{ color: '#ffffff', fontSize: '1.2em', fontWeight: 'bold' }}>
+                                  {completedPosts}
+                                </span>
+                              </div>
+                            )}
+                            {failedPosts > 0 && (
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <span style={{ color: '#ff3366' }}>❌ Failed:</span>
+                                <span style={{ color: '#ffffff', fontSize: '1.2em', fontWeight: 'bold' }}>
+                                  {failedPosts}
+                                </span>
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Additional Info */}
+                          {stats.length > 0 && stats[0].oldest_post && (
+                            <div style={{
+                              marginTop: '20px',
+                              padding: '12px',
+                              background: 'rgba(0, 0, 0, 0.2)',
+                              borderRadius: '8px',
+                              fontSize: '0.9em'
+                            }}>
+                              <div style={{ color: colors.text }}>📅 Oldest Post:</div>
+                              <div style={{ color: '#ffffff', marginTop: '5px' }}>
+                                {new Date(stats[0].oldest_post).toLocaleString()}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })
+                  })()}
                 </div>
               </div>
             )}
           </div>
         )}
-        
-        
+
+        {/* Retry Management Section */}
+        {activeTab === 'queues' && (
+          <div style={{...synthwaveStyles.card, marginTop: '20px'}} className="synthwave-card">
+            <h2 style={synthwaveStyles.cardTitle}>🔄 RETRY MANAGEMENT</h2>
+
+            <div style={{ display: 'grid', gap: '20px' }}>
+              {/* Retry Settings */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '15px' }}>
+                <div>
+                  <label style={{ display: 'block', marginBottom: '5px', color: '#ff006e', fontSize: '0.9em' }}>
+                    Retry Timeout (seconds):
+                  </label>
+                  <input
+                    type="number"
+                    min="30"
+                    max="3600"
+                    defaultValue={queueSettings?.retry_timeout_seconds?.value || "300"}
+                    style={synthwaveStyles.input}
+                    className="synthwave-input"
+                    onBlur={async (e) => {
+                      const value = e.target.value;
+                      if (value) {
+                        try {
+                          await fetch(`${API_BASE}/queue/settings`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                              setting_key: 'retry_timeout_seconds',
+                              setting_value: value
+                            })
+                          });
+                          console.log(`Updated retry timeout to ${value} seconds`);
+                        } catch (error) {
+                          console.error('Failed to update retry timeout:', error);
+                        }
+                      }
+                    }}
+                  />
+                  <small style={{ color: '#888', fontSize: '0.8em' }}>
+                    How long to wait before retrying failed posts
+                  </small>
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', marginBottom: '5px', color: '#ff006e', fontSize: '0.9em' }}>
+                    Max Retry Attempts:
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="10"
+                    defaultValue={queueSettings?.max_retry_attempts?.value || "3"}
+                    style={synthwaveStyles.input}
+                    className="synthwave-input"
+                    onBlur={async (e) => {
+                      const value = e.target.value;
+                      if (value) {
+                        try {
+                          await fetch(`${API_BASE}/queue/settings`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                              setting_key: 'max_retry_attempts',
+                              setting_value: value
+                            })
+                          });
+                          console.log(`Updated max retry attempts to ${value}`);
+                        } catch (error) {
+                          console.error('Failed to update max retry attempts:', error);
+                        }
+                      }
+                    }}
+                  />
+                  <small style={{ color: '#888', fontSize: '0.8em' }}>
+                    Maximum retry attempts per post
+                  </small>
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', marginBottom: '5px', color: '#ff006e', fontSize: '0.9em' }}>
+                    Stuck Post Threshold (minutes):
+                  </label>
+                  <input
+                    type="number"
+                    min="5"
+                    max="120"
+                    defaultValue={queueSettings?.stuck_post_threshold_minutes?.value || "30"}
+                    style={synthwaveStyles.input}
+                    className="synthwave-input"
+                    onBlur={async (e) => {
+                      const value = e.target.value;
+                      if (value) {
+                        try {
+                          await fetch(`${API_BASE}/queue/settings`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                              setting_key: 'stuck_post_threshold_minutes',
+                              setting_value: value
+                            })
+                          });
+                          console.log(`Updated stuck post threshold to ${value} minutes`);
+                        } catch (error) {
+                          console.error('Failed to update stuck post threshold:', error);
+                        }
+                      }
+                    }}
+                  />
+                  <small style={{ color: '#888', fontSize: '0.8em' }}>
+                    Minutes before a post is considered stuck
+                  </small>
+                </div>
+              </div>
+
+              {/* Action Buttons */}
+              <div style={{ display: 'flex', gap: '15px', flexWrap: 'wrap' }}>
+                <button
+                  style={{
+                    ...synthwaveStyles.button,
+                    background: 'linear-gradient(45deg, #ff006e, #8338ec)',
+                    color: 'white',
+                    fontSize: '0.9em',
+                    padding: '12px 20px'
+                  }}
+                  className="synthwave-button"
+                  onClick={async () => {
+                    try {
+                      const response = await fetch(`${API_BASE}/queue/stuck-posts`);
+                      const data = await response.json();
+                      if (data.success) {
+                        alert(`Found ${data.total_stuck} stuck posts:\n${data.stuck_posts.map((p: any) =>
+                          `• Post ${p.id}: ${p.title.substring(0, 50)}... (${p.queue_stage}, retries: ${p.retry_count})`
+                        ).join('\n')}`);
+                      }
+                    } catch (error) {
+                      alert('Failed to detect stuck posts: ' + error);
+                    }
+                  }}
+                >
+                  🔍 Detect Stuck Posts
+                </button>
+
+                <button
+                  style={{
+                    ...synthwaveStyles.button,
+                    background: 'linear-gradient(45deg, #00ff88, #00b4d8)',
+                    color: 'black',
+                    fontSize: '0.9em',
+                    padding: '12px 20px'
+                  }}
+                  className="synthwave-button"
+                  onClick={async () => {
+                    try {
+                      const response = await fetch(`${API_BASE}/queue/reset-stuck-posts`, {
+                        method: 'POST'
+                      });
+                      const data = await response.json();
+                      if (data.success) {
+                        alert(`Reset ${data.total_reset} stuck posts for retry`);
+                        // Refresh queue stats and settings
+                        getQueueStats();
+                        getQueueSettings();
+                      }
+                    } catch (error) {
+                      alert('Failed to reset stuck posts: ' + error);
+                    }
+                  }}
+                >
+                  🔄 Reset Stuck Posts
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+
         {activeTab === 'agents' && (
           <div>
             {/* Agent Configuration Overview */}
@@ -1312,6 +1661,160 @@ function App() {
           </div>
         )}
       </div>
+
+      {/* Pending Posts Modal */}
+      {pendingPostsModal.visible && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(0, 0, 0, 0.8)',
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+          zIndex: 1000
+        }}>
+          <div style={{
+            background: 'linear-gradient(135deg, #0f0f23 0%, #1a1a3a 50%, #0f0f23 100%)',
+            border: '2px solid #ff006e',
+            borderRadius: '15px',
+            padding: '30px',
+            maxWidth: '80%',
+            maxHeight: '80%',
+            overflow: 'auto',
+            minWidth: '600px',
+            boxShadow: '0 0 50px rgba(255, 0, 110, 0.3)'
+          }}>
+            <div style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              marginBottom: '25px'
+            }}>
+              <h2 style={{
+                color: '#ff006e',
+                fontSize: '1.8em',
+                textTransform: 'uppercase',
+                textShadow: '0 0 10px #ff006e',
+                margin: 0
+              }}>
+                {pendingPostsModal.stage === 'triage' ? '⚡ New Posts' :
+                 pendingPostsModal.stage === 'research' ? '🔍 Research Pending' :
+                 pendingPostsModal.stage === 'response' ? '✍️ Response Pending' :
+                 pendingPostsModal.stage === 'editorial' ? '📝 Editorial Pending' : 'Pending Posts'}
+                 <span style={{ color: '#ffffff', marginLeft: '10px' }}>
+                   ({pendingPostsModal.posts.length})
+                 </span>
+              </h2>
+              <button
+                onClick={() => setPendingPostsModal({visible: false, stage: '', posts: []})}
+                style={{
+                  background: 'transparent',
+                  border: '2px solid #ff006e',
+                  borderRadius: '50%',
+                  width: '40px',
+                  height: '40px',
+                  color: '#ff006e',
+                  fontSize: '20px',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center'
+                }}
+              >
+                ×
+              </button>
+            </div>
+
+            <div style={{
+              display: 'grid',
+              gap: '15px',
+              maxHeight: '400px',
+              overflow: 'auto'
+            }}>
+              {pendingPostsModal.posts.length === 0 ? (
+                <div style={{
+                  textAlign: 'center',
+                  color: '#ffffff',
+                  fontSize: '1.2em',
+                  padding: '50px'
+                }}>
+                  No pending posts found
+                </div>
+              ) : (
+                pendingPostsModal.posts.map((post: any, index: number) => (
+                  <div key={post.id} style={{
+                    background: 'rgba(255, 255, 255, 0.05)',
+                    border: '1px solid rgba(255, 0, 110, 0.2)',
+                    borderRadius: '10px',
+                    padding: '15px',
+                    transition: 'all 0.2s ease'
+                  }}>
+                    <div style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'flex-start',
+                      marginBottom: '10px'
+                    }}>
+                      <div style={{
+                        color: '#ff006e',
+                        fontSize: '0.9em',
+                        fontWeight: 'bold'
+                      }}>
+                        #{index + 1} • u/{post.author}
+                      </div>
+                      <div style={{
+                        color: '#ffcc00',
+                        fontSize: '0.8em'
+                      }}>
+                        {post.retry_count > 0 && `Retry: ${post.retry_count}`}
+                      </div>
+                    </div>
+                    <div style={{
+                      color: '#ffffff',
+                      fontSize: '1.1em',
+                      lineHeight: '1.4',
+                      marginBottom: '10px'
+                    }}>
+                      {post.title}
+                    </div>
+                    <div style={{
+                      color: '#8892b0',
+                      fontSize: '0.85em',
+                      display: 'flex',
+                      justifyContent: 'space-between'
+                    }}>
+                      <span>Post ID: {post.reddit_id}</span>
+                      <span>
+                        {new Date(post.created_utc).toLocaleString()}
+                      </span>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+
+            <div style={{
+              marginTop: '25px',
+              textAlign: 'center'
+            }}>
+              <button
+                onClick={() => setPendingPostsModal({visible: false, stage: '', posts: []})}
+                style={{
+                  ...synthwaveStyles.button,
+                  background: 'linear-gradient(45deg, #ff006e, #8338ec)',
+                  padding: '12px 30px'
+                }}
+                className="synthwave-button"
+              >
+                CLOSE
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

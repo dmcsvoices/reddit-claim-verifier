@@ -164,7 +164,7 @@ class DatabaseWriteTool:
                 
                 # Insert the result
                 cur.execute("""
-                    INSERT INTO queue_results (post_id, stage, result)
+                    INSERT INTO queue_results (post_id, stage, content)
                     VALUES (%s, %s, %s)
                     RETURNING id
                 """, (post_id, stage, json.dumps(result_data)))
@@ -262,15 +262,20 @@ async def get_latest_result(post_id: int, stage: str) -> Optional[Dict[str, Any]
         conn = get_db_connection()
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT result FROM queue_results 
-                WHERE post_id = %s AND stage = %s 
-                ORDER BY created_at DESC 
+                SELECT content FROM queue_results
+                WHERE post_id = %s AND stage = %s
+                ORDER BY created_at DESC
                 LIMIT 1
             """, (post_id, stage))
             
             result = cur.fetchone()
             if result:
-                return json.loads(result[0])
+                # Handle both JSON string and already parsed dict
+                content = result[0]
+                if isinstance(content, str):
+                    return json.loads(content)
+                else:
+                    return content  # Already a dict
             return None
             
     except Exception as e:
@@ -288,9 +293,9 @@ async def get_post_processing_history(post_id: int) -> Dict[str, Any]:
         conn = get_db_connection()
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT stage, result, created_at 
-                FROM queue_results 
-                WHERE post_id = %s 
+                SELECT stage, content, created_at
+                FROM queue_results
+                WHERE post_id = %s
                 ORDER BY created_at ASC
             """, (post_id,))
             
@@ -300,8 +305,13 @@ async def get_post_processing_history(post_id: int) -> Dict[str, Any]:
             for stage, result_json, created_at in results:
                 if stage not in history:
                     history[stage] = []
-                
-                result_data = json.loads(result_json)
+
+                # Handle both JSON string and already parsed dict
+                if isinstance(result_json, str):
+                    result_data = json.loads(result_json)
+                else:
+                    result_data = result_json  # Already a dict
+
                 result_data["created_at"] = created_at.isoformat()
                 history[stage].append(result_data)
             

@@ -33,8 +33,13 @@ class BaseAgent(ABC):
         self.tools = self.get_tools()
         self.tool_implementations = self.get_tool_implementations()
         
-        # Validate model availability (non-blocking)
-        asyncio.create_task(self._validate_model_async())
+        # Validate model availability (non-blocking, only if event loop is running)
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(self._validate_model_async())
+        except RuntimeError:
+            # No event loop running, skip async validation for now
+            pass
     
     def _get_db_connection(self):
         """Get database connection"""
@@ -150,14 +155,16 @@ class BaseAgent(ABC):
                     return default_prompt
                 
         except Exception as e:
-            print(f"Warning: Could not fetch system prompt from database for {self.agent_stage}: {e}")
+            print(f"❌ ERROR: Could not fetch system prompt from database for {self.agent_stage}: {e}")
+            print(f"⚠️ WARNING: This should not happen in production! Database prompts should always be available.")
             try:
                 if conn:
                     conn.close()
             except:
                 pass
-        
-        # Fallback to default prompt
+
+        # Emergency fallback - this should never be reached in normal operation
+        print(f"🚨 EMERGENCY FALLBACK: Using hardcoded prompt for {self.agent_stage} - DATABASE CONNECTION FAILED!")
         return self.get_default_system_prompt()
     
     @abstractmethod
@@ -311,13 +318,13 @@ class BaseAgent(ABC):
                 print(f"   🛠️  Tools: {tool_names}")
             
             # Make request using native Ollama API
-            if ":11434" not in self.endpoint:
-                # Custom Ollama endpoint
-                client = ollama.AsyncClient(host=self.endpoint)
-                response = await client.chat(**request_params)
-            else:
+            if self.endpoint == "http://localhost:11434" or self.endpoint == "localhost:11434":
                 # Default Ollama endpoint
                 client = ollama.AsyncClient()
+                response = await client.chat(**request_params)
+            else:
+                # Custom Ollama endpoint (including other IPs/ports)
+                client = ollama.AsyncClient(host=self.endpoint)
                 response = await client.chat(**request_params)
             
             print(f"📡 {self.agent_stage.upper()} OLLAMA RESPONSE:")
