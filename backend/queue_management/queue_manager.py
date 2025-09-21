@@ -326,9 +326,19 @@ class QueueManager:
             await self.handle_agent_completion(post_id, stage, result)
 
             # Record metrics
-            token_count = result.get("usage", {}).get("total_tokens", 0)
-            if token_count > 0:
-                print(f"📈 {worker_id}: used {token_count} tokens")
+            try:
+                usage = result.get("usage", {})
+                if isinstance(usage, dict):
+                    token_count = usage.get("total_tokens", 0)
+                else:
+                    # Handle Together AI UsageData object
+                    token_count = getattr(usage, 'total_tokens', 0)
+
+                if token_count > 0:
+                    print(f"📈 {worker_id}: used {token_count} tokens")
+            except Exception as e:
+                print(f"⚠️  Could not extract token usage: {e}")
+                token_count = 0
 
             agent_metrics.record_request(stage, success, processing_time, token_count)
 

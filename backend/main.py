@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
+from typing import Optional
 
 # Load environment variables from .env file
 # Try both root level and parent directory for compatibility
@@ -1011,18 +1012,20 @@ async def get_agent_config():
     try:
         conn = get_db_connection()
         with conn.cursor() as cur:
-            cur.execute("SELECT agent_stage, model, endpoint, timeout, max_concurrent FROM agent_config")
+            cur.execute("SELECT agent_stage, model, endpoint, timeout, max_concurrent, endpoint_type, api_key_env FROM agent_config")
             rows = cur.fetchall()
-            
+
             # Convert to dict with agent_stage as key
             db_config = {}
             for row in rows:
-                stage, model, endpoint, timeout, max_concurrent = row
+                stage, model, endpoint, timeout, max_concurrent, endpoint_type, api_key_env = row
                 db_config[stage] = {
                     "model": model,
                     "endpoint": endpoint,
                     "timeout": timeout,
-                    "max_concurrent": max_concurrent
+                    "max_concurrent": max_concurrent,
+                    "endpoint_type": endpoint_type or "custom",
+                    "api_key_env": api_key_env
                 }
             
             # Always load defaults and merge with database values
@@ -1052,6 +1055,8 @@ class AgentConfigUpdate(BaseModel):
     endpoint: str
     timeout: int = 120
     max_concurrent: int = 2
+    endpoint_type: str = "custom"
+    api_key_env: Optional[str] = None
 
 
 @app.post("/agents/config")
@@ -1061,21 +1066,25 @@ async def save_agent_config(config_update: AgentConfigUpdate):
         conn = get_db_connection()
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO agent_config (agent_stage, model, endpoint, timeout, max_concurrent, updated_at)
-                VALUES (%s, %s, %s, %s, %s, NOW())
+                INSERT INTO agent_config (agent_stage, model, endpoint, timeout, max_concurrent, endpoint_type, api_key_env, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
                 ON CONFLICT (agent_stage)
                 DO UPDATE SET
                     model = EXCLUDED.model,
                     endpoint = EXCLUDED.endpoint,
                     timeout = EXCLUDED.timeout,
                     max_concurrent = EXCLUDED.max_concurrent,
+                    endpoint_type = EXCLUDED.endpoint_type,
+                    api_key_env = EXCLUDED.api_key_env,
                     updated_at = NOW()
             """, (
                 config_update.agent_stage,
-                config_update.model, 
+                config_update.model,
                 config_update.endpoint,
                 config_update.timeout,
-                config_update.max_concurrent
+                config_update.max_concurrent,
+                config_update.endpoint_type,
+                config_update.api_key_env
             ))
         conn.commit()
         return {"success": True, "message": f"Agent config for {config_update.agent_stage} saved successfully"}

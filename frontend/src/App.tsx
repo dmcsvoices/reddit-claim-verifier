@@ -66,6 +66,7 @@ function App() {
   const [testingEndpoint, setTestingEndpoint] = useState<string | null>(null)
   const [currentEndpoints, setCurrentEndpoints] = useState<{[key: string]: string}>({}) // Track current endpoint values per stage
   const [currentModels, setCurrentModels] = useState<{[key: string]: string}>({}) // Track current model selections per stage
+  const [endpointTypes, setEndpointTypes] = useState<{[key: string]: string}>({}) // Track endpoint type per stage: 'together' or 'custom'
 
   // Posts filtering state
   const [stageFilter, setStageFilter] = useState<string>('all')
@@ -75,17 +76,20 @@ function App() {
   const saveAgentSettings = async () => {
     try {
       // Save each agent configuration to database
-      for (const stage of Object.keys(currentEndpoints)) {
-        if (currentModels[stage] && currentEndpoints[stage]) {
+      const allStages = [...new Set([...Object.keys(currentEndpoints), ...Object.keys(endpointTypes)])]
+      for (const stage of allStages) {
+        if (currentModels[stage] && (endpointTypes[stage] === 'together' || currentEndpoints[stage])) {
           await fetch(`${API_BASE}/agents/config`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               agent_stage: stage,
               model: currentModels[stage],
-              endpoint: currentEndpoints[stage],
+              endpoint: endpointTypes[stage] === 'together' ? 'together-api' : currentEndpoints[stage],
               timeout: 120,
-              max_concurrent: 2
+              max_concurrent: 2,
+              endpoint_type: endpointTypes[stage] || 'custom',
+              api_key_env: endpointTypes[stage] === 'together' ? 'TOGETHER_API_KEY' : null
             })
           })
         }
@@ -120,15 +124,20 @@ function App() {
         if (data.config) {
           const endpoints: {[key: string]: string} = {}
           const models: {[key: string]: string} = {}
-          
+          const endpointTypesData: {[key: string]: string} = {}
+
           for (const [stage, config] of Object.entries(data.config)) {
             const stageConfig = config as any
             endpoints[stage] = stageConfig.endpoint
             models[stage] = stageConfig.model
+            // Map endpoint_type from database to frontend state
+            endpointTypesData[stage] = stageConfig.endpoint_type || 'custom'
           }
-          
+
           setCurrentEndpoints(endpoints)
           setCurrentModels(models)
+          setEndpointTypes(endpointTypesData)
+          console.log('🔄 Loaded endpoint types:', endpointTypesData)
           return data
         }
       }
@@ -774,10 +783,10 @@ function App() {
 
   // Auto-save when settings change
   useEffect(() => {
-    if (Object.keys(currentEndpoints).length > 0 || Object.keys(currentModels).length > 0) {
+    if (Object.keys(currentEndpoints).length > 0 || Object.keys(currentModels).length > 0 || Object.keys(endpointTypes).length > 0) {
       saveAgentSettings()
     }
-  }, [currentEndpoints, currentModels])
+  }, [currentEndpoints, currentModels, endpointTypes])
 
   return (
     <div style={synthwaveStyles.app} className="synthwave-bg">
@@ -1852,71 +1861,153 @@ function App() {
                       <div style={{ display: 'grid', gap: '15px', fontSize: '0.9em' }}>
                         {/* Endpoint Configuration */}
                         <div>
-                          <label style={{ display: 'block', marginBottom: '5px', color: '#ff006e', fontSize: '0.9em' }}>Endpoint URL:</label>
-                          <input
-                            id={`endpoint-${stage}`}
-                            type="text"
-                            defaultValue={currentEndpoints[stage] || config.endpoint}
-                            key={`${stage}-${currentEndpoints[stage] || config.endpoint}`} // Force re-render when endpoint changes
-                            placeholder="http://localhost:11434 (base URL only, /v1/models will be auto-appended)"
-                            style={{
-                              ...synthwaveStyles.input,
-                              fontSize: '0.9em',
-                              marginBottom: '5px'
-                            }}
-                            className="synthwave-input"
-                            onBlur={async (e) => {
-                              const url = e.target.value.trim()
-                              if (url && url !== config.endpoint) {
-                                console.log(`Auto-polling models for updated endpoint: ${url}`)
-                                // Update the current endpoint for this stage
-                                setCurrentEndpoints(prev => ({ ...prev, [stage]: url }))
-                                // Silently fetch models when endpoint changes
-                                await testEndpointAndFetchModels(url)
-                              }
-                            }}
-                          />
-                          <button
-                            onClick={async () => {
-                              const input = document.getElementById(`endpoint-${stage}`) as HTMLInputElement
-                              const url = input?.value.trim()
-                              
-                              if (!url) {
-                                alert('⚠️ Please enter an endpoint URL')
-                                return
-                              }
-                              
-                              console.log(`Testing endpoint for ${stage}:`, url)
-                              const result = await testEndpointAndFetchModels(url, stage)
-                              
-                              if (result.success) {
-                                alert(`✅ Endpoint connected successfully!\n\nFound ${result.models.length} models:\n${result.models.slice(0, 5).join('\n')}${result.models.length > 5 ? '\n...' : ''}`)
-                              } else {
-                                alert(`❌ Failed to connect to endpoint:\n\n${result.error}`)
-                              }
-                            }}
-                            disabled={testingEndpoint === stage}
-                            style={{
-                              ...synthwaveStyles.button,
-                              background: testingEndpoint === stage 
-                                ? 'rgba(255, 255, 255, 0.1)' 
-                                : 'linear-gradient(45deg, #00ff88, #3a86ff)',
-                              fontSize: '0.8em',
-                              padding: '6px 12px',
-                              cursor: testingEndpoint === stage ? 'not-allowed' : 'pointer',
-                              opacity: testingEndpoint === stage ? 0.6 : 1
-                            }}
-                            className={testingEndpoint === stage ? '' : 'synthwave-button'}
-                          >
-                            {testingEndpoint === stage ? (
-                              <>
-                                <span className="loading-spinner" style={{marginRight: '6px'}}></span>
-                                TESTING...
-                              </>
-                            ) : (
-                              '🔍 TEST ENDPOINT'
-                            )}
-                          </button>
+                          <label style={{ display: 'block', marginBottom: '8px', color: '#ff006e', fontSize: '0.9em' }}>Endpoint Type:</label>
+
+                          {/* Radio Button Selection */}
+                          <div style={{ marginBottom: '15px' }}>
+                            <div style={{
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: '8px',
+                              background: 'rgba(0, 0, 0, 0.2)',
+                              padding: '10px',
+                              borderRadius: '8px',
+                              border: '1px solid rgba(255, 0, 110, 0.3)'
+                            }}>
+                              <label style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                cursor: 'pointer',
+                                fontSize: '0.85em',
+                                color: endpointTypes[stage] === 'together' ? '#00ff88' : '#ffffff'
+                              }}>
+                                <input
+                                  type="radio"
+                                  name={`endpoint-type-${stage}`}
+                                  value="together"
+                                  checked={endpointTypes[stage] === 'together'}
+                                  onChange={() => {
+                                    console.log(`🟣 Selected Together API for ${stage}`)
+                                    setEndpointTypes(prev => ({ ...prev, [stage]: 'together' }))
+                                    // Set default Together API model if none selected
+                                    if (!currentModels[stage]) {
+                                      setCurrentModels(prev => ({ ...prev, [stage]: 'openai/gpt-oss-120b' }))
+                                    }
+                                  }}
+                                  style={{ marginRight: '8px', accentColor: '#00ff88' }}
+                                />
+                                🟣 Together AI (openai/gpt-oss-120b)
+                              </label>
+
+                              <label style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                cursor: 'pointer',
+                                fontSize: '0.85em',
+                                color: endpointTypes[stage] === 'custom' || !endpointTypes[stage] ? '#00ff88' : '#ffffff'
+                              }}>
+                                <input
+                                  type="radio"
+                                  name={`endpoint-type-${stage}`}
+                                  value="custom"
+                                  checked={endpointTypes[stage] === 'custom' || !endpointTypes[stage]}
+                                  onChange={() => {
+                                    console.log(`🔧 Selected Custom Endpoint for ${stage}`)
+                                    setEndpointTypes(prev => ({ ...prev, [stage]: 'custom' }))
+                                  }}
+                                  style={{ marginRight: '8px', accentColor: '#00ff88' }}
+                                />
+                                🔧 Custom Endpoint (Ollama/LM Studio/Other)
+                              </label>
+                            </div>
+                          </div>
+
+                          {/* Custom Endpoint Input - Only show when custom is selected */}
+                          {(endpointTypes[stage] === 'custom' || !endpointTypes[stage]) && (
+                            <div style={{ marginBottom: '10px' }}>
+                              <label style={{ display: 'block', marginBottom: '5px', color: '#3a86ff', fontSize: '0.85em' }}>Custom Endpoint URL:</label>
+                              <input
+                                id={`endpoint-${stage}`}
+                                type="text"
+                                defaultValue={currentEndpoints[stage] || config.endpoint}
+                                key={`${stage}-${currentEndpoints[stage] || config.endpoint}`}
+                                placeholder="http://localhost:11434 (base URL only)"
+                                style={{
+                                  ...synthwaveStyles.input,
+                                  fontSize: '0.9em',
+                                  marginBottom: '5px'
+                                }}
+                                className="synthwave-input"
+                                onBlur={async (e) => {
+                                  const url = e.target.value.trim()
+                                  if (url && url !== config.endpoint) {
+                                    console.log(`Auto-polling models for updated endpoint: ${url}`)
+                                    setCurrentEndpoints(prev => ({ ...prev, [stage]: url }))
+                                    await testEndpointAndFetchModels(url)
+                                  }
+                                }}
+                              />
+                              <button
+                                onClick={async () => {
+                                  const input = document.getElementById(`endpoint-${stage}`) as HTMLInputElement
+                                  const url = input?.value.trim()
+
+                                  if (!url) {
+                                    alert('⚠️ Please enter an endpoint URL')
+                                    return
+                                  }
+
+                                  console.log(`Testing endpoint for ${stage}:`, url)
+                                  const result = await testEndpointAndFetchModels(url, stage)
+
+                                  if (result.success) {
+                                    alert(`✅ Endpoint connected successfully!\n\nFound ${result.models.length} models:\n${result.models.slice(0, 5).join('\n')}${result.models.length > 5 ? '\n...' : ''}`)
+                                  } else {
+                                    alert(`❌ Failed to connect to endpoint:\n\n${result.error}`)
+                                  }
+                                }}
+                                disabled={testingEndpoint === stage}
+                                style={{
+                                  ...synthwaveStyles.button,
+                                  background: testingEndpoint === stage
+                                    ? 'rgba(255, 255, 255, 0.1)'
+                                    : 'linear-gradient(45deg, #00ff88, #3a86ff)',
+                                  fontSize: '0.8em',
+                                  padding: '6px 12px',
+                                  cursor: testingEndpoint === stage ? 'not-allowed' : 'pointer',
+                                  opacity: testingEndpoint === stage ? 0.6 : 1
+                                }}
+                                className={testingEndpoint === stage ? '' : 'synthwave-button'}
+                              >
+                                {testingEndpoint === stage ? (
+                                  <>
+                                    <span className="loading-spinner" style={{marginRight: '6px'}}></span>
+                                    TESTING...
+                                  </>
+                                ) : (
+                                  '🔍 TEST ENDPOINT'
+                                )}
+                              </button>
+                            </div>
+                          )}
+
+                          {/* Together API Status Display */}
+                          {endpointTypes[stage] === 'together' && (
+                            <div style={{
+                              background: 'rgba(0, 255, 136, 0.1)',
+                              border: '1px solid rgba(0, 255, 136, 0.3)',
+                              borderRadius: '8px',
+                              padding: '10px',
+                              fontSize: '0.85em',
+                              color: '#00ff88'
+                            }}>
+                              🟣 <strong>Together AI Endpoint Active</strong><br/>
+                              <small style={{ color: '#8ecae6' }}>
+                                Enterprise-grade models with function calling support<br/>
+                                Model: openai/gpt-oss-120b
+                              </small>
+                            </div>
+                          )}
                         </div>
 
                         {/* Model Selection */}
@@ -1924,7 +2015,7 @@ function App() {
                           <label style={{ display: 'block', marginBottom: '5px', color: '#ff006e', fontSize: '0.9em' }}>Selected Model:</label>
                           <select
                             defaultValue={currentModels[stage] || config.model}
-                            key={`model-${stage}-${currentModels[stage] || config.model}`} // Force re-render when model changes
+                            key={`model-${stage}-${currentModels[stage] || config.model}-${endpointTypes[stage]}`} // Force re-render when model or endpoint type changes
                             style={{
                               ...synthwaveStyles.input,
                               fontSize: '0.9em',
@@ -1940,36 +2031,70 @@ function App() {
                             <option value={currentModels[stage] || config.model}>
                               {currentModels[stage] || config.model} (current)
                             </option>
-                            {availableModels[currentEndpoints[stage] || config.endpoint]?.map((model: string, idx: number) => {
-                              const currentModel = currentModels[stage] || config.model
-                              return model !== currentModel && (
-                                <option key={idx} value={model}>{model}</option>
-                              )
-                            })}
+
+                            {/* Show Together AI models when Together is selected */}
+                            {endpointTypes[stage] === 'together' ? (
+                              [
+                                'Qwen/Qwen3-Next-80B-A3B-Thinking',
+                                'Qwen/Qwen2.5-7B-Instruct-Turbo',
+                                'meta-llama/Llama-3.1-8B-Instruct-Turbo',
+                                'meta-llama/Llama-3.1-70B-Instruct-Turbo',
+                                'meta-llama/Llama-3.1-405B-Instruct-Turbo',
+                                'mistralai/Mixtral-8x7B-Instruct-v0.1',
+                                'mistralai/Mistral-7B-Instruct-v0.3'
+                              ].map((model: string, idx: number) => {
+                                const currentModel = currentModels[stage] || config.model
+                                return model !== currentModel && (
+                                  <option key={idx} value={model}>{model}</option>
+                                )
+                              })
+                            ) : (
+                              /* Show custom endpoint models */
+                              availableModels[currentEndpoints[stage] || config.endpoint]?.map((model: string, idx: number) => {
+                                const currentModel = currentModels[stage] || config.model
+                                return model !== currentModel && (
+                                  <option key={idx} value={model}>{model}</option>
+                                )
+                              })
+                            )}
                           </select>
                           {(() => {
+                            const currentEndpointType = endpointTypes[stage] || 'custom'
                             const currentEndpoint = currentEndpoints[stage] || config.endpoint
-                            return availableModels[currentEndpoint] ? (
-                              <div style={{ color: '#8338ec', fontSize: '0.8em', marginTop: '5px' }}>
-                                ✅ {availableModels[currentEndpoint].length} models available
-                                <br />
-                                <small style={{ color: '#666', fontSize: '0.7em' }}>
-                                  Cache key: {currentEndpoint}
+
+                            if (currentEndpointType === 'together') {
+                              return (
+                                <div style={{ color: '#8338ec', fontSize: '0.8em', marginTop: '5px' }}>
+                                  ✅ Together AI configured
                                   <br />
-                                  All keys: {Object.keys(availableModels).join(', ')}
+                                  <small style={{ color: '#666', fontSize: '0.7em' }}>
+                                    Model: {currentModels[stage] || 'openai/gpt-oss-120b'}
+                                    <br />
+                                    <span style={{ color: '#00ff88' }}>💾 Settings auto-saved</span>
+                                  </small>
+                                </div>
+                              )
+                            } else {
+                              return availableModels[currentEndpoint] ? (
+                                <div style={{ color: '#8338ec', fontSize: '0.8em', marginTop: '5px' }}>
+                                  ✅ {availableModels[currentEndpoint].length} models available
                                   <br />
-                                  <span style={{ color: '#00ff88' }}>💾 Settings auto-saved</span>
-                                </small>
-                              </div>
-                            ) : currentEndpoint ? (
-                              <div style={{ color: '#ff006e', fontSize: '0.8em', marginTop: '5px' }}>
-                                🔍 Loading models from endpoint...
-                              </div>
-                            ) : (
-                              <div style={{ color: '#666', fontSize: '0.8em', marginTop: '5px' }}>
-                                ⚠️ Enter endpoint URL to see available models
-                              </div>
-                            )
+                                  <small style={{ color: '#666', fontSize: '0.7em' }}>
+                                    Endpoint: {currentEndpoint}
+                                    <br />
+                                    <span style={{ color: '#00ff88' }}>💾 Settings auto-saved</span>
+                                  </small>
+                                </div>
+                              ) : currentEndpoint ? (
+                                <div style={{ color: '#ff006e', fontSize: '0.8em', marginTop: '5px' }}>
+                                  🔍 Loading models from endpoint...
+                                </div>
+                              ) : (
+                                <div style={{ color: '#666', fontSize: '0.8em', marginTop: '5px' }}>
+                                  ⚠️ Enter endpoint URL to see available models
+                                </div>
+                              )
+                            }
                           })()}
                         </div>
 

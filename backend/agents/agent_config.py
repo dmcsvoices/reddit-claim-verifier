@@ -101,19 +101,21 @@ class AgentFactory:
             with psycopg.connect(**connection_params) as conn:
                 with conn.cursor() as cur:
                     cur.execute("""
-                        SELECT model, endpoint, timeout, max_concurrent
+                        SELECT model, endpoint, timeout, max_concurrent, endpoint_type, api_key_env
                         FROM agent_config
                         WHERE agent_stage = %s
                     """, (stage,))
 
                     result = cur.fetchone()
                     if result:
-                        print(f"📊 Loaded {stage} config from database: model={result[0]}, endpoint={result[1]}")
+                        print(f"📊 Loaded {stage} config from database: model={result[0]}, endpoint={result[1]}, type={result[4]}")
                         return {
                             "model": result[0],
                             "endpoint": result[1],
                             "timeout": result[2],
-                            "max_concurrent": result[3]
+                            "max_concurrent": result[3],
+                            "endpoint_type": result[4],
+                            "api_key_env": result[5]
                         }
         except Exception as e:
             print(f"⚠️  Failed to load {stage} config from database: {e}")
@@ -146,7 +148,9 @@ class AgentFactory:
         return agent_class(
             model=config["model"],
             endpoint=config["endpoint"],
-            timeout=config["timeout"]
+            timeout=config["timeout"],
+            endpoint_type=config.get("endpoint_type", "custom"),
+            api_key_env=config.get("api_key_env")
         )
     
     @staticmethod

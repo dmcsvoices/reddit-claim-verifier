@@ -24,10 +24,12 @@ from tools.time_source import get_time_tool
 
 
 class BaseAgent(ABC):
-    def __init__(self, model: str, endpoint: str, timeout: int = 60):
+    def __init__(self, model: str, endpoint: str, timeout: int = 60, endpoint_type: str = "custom", api_key_env: str = None):
         self.model = model
         self.endpoint = endpoint.rstrip('/')
         self.timeout = timeout
+        self.endpoint_type = endpoint_type or "custom"
+        self.api_key_env = api_key_env
         # Determine agent stage from class name (e.g., "TriageAgent" -> "triage")
         self.agent_stage = self.__class__.__name__.lower().replace('agent', '')
         self.tools = self.get_tools()
@@ -199,23 +201,34 @@ class BaseAgent(ABC):
         return implementations
     
     async def call_llm(self, messages: List[Dict[str, str]], tools: List[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Make a request to Ollama using Python library for proper tool support"""
+        """Make a request to the configured LLM endpoint with proper tool support"""
         print(f"🌐 {self.agent_stage.upper()} API REQUEST:")
         print(f"   Model: {self.model}")
         print(f"   Endpoint: {self.endpoint}")
+        print(f"   Endpoint Type: {self.endpoint_type}")
         print(f"   Tools available: {len(tools) if tools else 0}")
         if tools:
             tool_names = [tool.get('function', {}).get('name', 'unknown') for tool in tools]
             print(f"   Tool names: {tool_names}")
-        
-        # Check if endpoint uses port 1234 (LM Studio) vs 11434 (Ollama)
-        if ":1234" in self.endpoint:
-            print(f"   🔄 Port 1234 detected - using LM Studio Python API")
+
+        # Route based on endpoint type
+        if self.endpoint_type == "together":
+            print(f"   🔄 Using Together AI API")
+            return await self.call_together_api(messages, tools)
+        elif self.endpoint_type == "lmstudio":
+            print(f"   🔄 Using LM Studio Python API")
             return await self.call_lmstudio_python_api(messages, tools)
-        
-        # Ollama endpoints (port 11434)
-        print(f"   🔄 Using Ollama Python API")
-        return await self.call_ollama_python_api(messages, tools)
+        elif self.endpoint_type == "ollama":
+            print(f"   🔄 Using Ollama Python API")
+            return await self.call_ollama_python_api(messages, tools)
+        else:
+            # Custom endpoint - try to detect by port for backward compatibility
+            if ":1234" in self.endpoint:
+                print(f"   🔄 Port 1234 detected - using LM Studio Python API")
+                return await self.call_lmstudio_python_api(messages, tools)
+            else:
+                print(f"   🔄 Using Ollama Python API (default)")
+                return await self.call_ollama_python_api(messages, tools)
     
     async def call_lmstudio_python_api(self, messages: List[Dict[str, str]], tools: List[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Use LM Studio Python API with OpenAI client library"""
@@ -289,7 +302,254 @@ class BaseAgent(ABC):
             error_msg = f"LM Studio Python API request failed: {str(e)}"
             print(f"   ❌ Error: {error_msg}")
             return {"error": error_msg}
-    
+
+    async def call_together_api(self, messages: List[Dict[str, str]], tools: List[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Use Together AI API with function calling support"""
+        print(f"🟣 {self.agent_stage.upper()} TOGETHER AI API REQUEST:")
+        print(f"   Model: {self.model}")
+        print(f"   API Key Env: {self.api_key_env}")
+
+        try:
+            from together import Together
+            import os
+
+            # Get API key from environment
+            api_key = os.environ.get("TOGETHER_API_KEY")
+            if not api_key:
+                error_msg = "TOGETHER_API_KEY environment variable not set"
+                print(f"   ❌ Error: {error_msg}")
+                return {"error": error_msg}
+
+            # Initialize Together client
+            client = Together(api_key=api_key)
+
+            # Prepare request parameters
+            request_params = {
+                "model": self.model,
+                "messages": messages,
+                "temperature": 0.7,
+                "max_tokens": 3000  # Increased for thinking models like Qwen
+            }
+
+            # Add tools if provided
+            if tools:
+                request_params["tools"] = tools
+                print(f"   🔧 Tools provided: {len(tools)}")
+                for tool in tools:
+                    tool_name = tool.get('function', {}).get('name', 'unknown')
+                    print(f"      - {tool_name}")
+
+                # Force the model to call the first available tool
+                # This prevents the model from hallucinating non-existent tool names
+                if len(tools) > 0:
+                    first_tool_name = tools[0].get('function', {}).get('name')
+                    if first_tool_name:
+                        request_params["tool_choice"] = {
+                            "type": "function",
+                            "function": {"name": first_tool_name}
+                        }
+                        print(f"   🎯 Forcing tool choice: {first_tool_name}")
+
+            print(f"   📤 Making Together API request...")
+
+            # Make the API call
+            response = client.chat.completions.create(**request_params)
+
+            print(f"   ✅ Together API call successful")
+
+            # Handle tool calls if present
+            message = response.choices[0].message
+            if hasattr(message, 'tool_calls') and message.tool_calls:
+                return await self.handle_together_tool_calls(response, messages, tools)
+            else:
+                return {
+                    "success": True,
+                    "content": message.content,
+                    "usage": getattr(response, 'usage', {}),
+                    "tool_calls": []
+                }
+
+        except ImportError:
+            error_msg = "Together library not installed. Run: pip install together"
+            print(f"   ❌ Error: {error_msg}")
+            return {"error": error_msg}
+        except Exception as e:
+            error_msg = f"Together AI API request failed: {str(e)}"
+            print(f"   ❌ Error: {error_msg}")
+            return {"error": error_msg}
+
+    async def handle_together_tool_calls(self, response, messages: List[Dict[str, str]], tools: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Handle tool calls from Together AI API response"""
+        print(f"🔧 {self.agent_stage.upper()} TOGETHER TOOL CALLS:")
+
+        message = response.choices[0].message
+        tool_calls = message.tool_calls
+
+        print(f"   🔄 Executing {len(tool_calls)} tool calls...")
+        tool_results = []
+        tools_used = []
+
+        for i, tool_call in enumerate(tool_calls):
+            function_name = tool_call.function.name
+            function_args = tool_call.function.arguments
+
+            print(f"   🔧 Tool {i+1}/{len(tool_calls)}: {function_name}")
+            print(f"      Args: {function_args}")
+
+            # Execute the tool
+            # Convert Together API format to standard tool call format
+            standard_tool_call = {
+                "function": {
+                    "name": function_name,
+                    "arguments": function_args if isinstance(function_args, dict) else {}
+                }
+            }
+            result = await self.execute_tool_call(standard_tool_call)
+            tool_results.append(result)
+            tools_used.append(function_name)
+
+            if isinstance(result, dict) and "error" in result:
+                print(f"      Error: {result['error']}")
+
+        # Debug: Show what content we have from the initial response
+        initial_content = message.content or ""
+        print(f"   📄 Initial message content: {repr(initial_content[:200])}")
+
+        # DETAILED LOGGING: Show complete response analysis
+        print(f"🔍 DETAILED RESPONSE ANALYSIS:")
+        print(f"   📏 Content length: {len(initial_content)} chars")
+        print(f"   🔧 Tools called: {len(tool_calls)} ({[tc.function.name for tc in tool_calls]})")
+        print(f"   🎯 Agent stage: {self.agent_stage}")
+
+        # Show more content if it exists
+        if len(initial_content) > 200:
+            print(f"   📄 Full content preview: {repr(initial_content[:500])}...")
+        elif initial_content:
+            print(f"   📄 Full content: {repr(initial_content)}")
+        else:
+            print(f"   📄 No content in response")
+
+        # Show tool results details
+        if tool_results:
+            print(f"   🔧 Tool execution results:")
+            for i, result in enumerate(tool_results):
+                tool_name = tool_calls[i].function.name if i < len(tool_calls) else "unknown"
+                print(f"      Tool {i+1} ({tool_name}): {result}")
+
+        # For triage agent, we need to make a follow-up call with tool results
+        # to get the final JSON response
+        if self.agent_stage == "triage" and tool_results:
+            print(f"   🔄 Making follow-up call to get final triage JSON...")
+
+            # Prepare messages with tool results
+            follow_up_messages = messages.copy()
+
+            # Add the assistant's tool call message
+            follow_up_messages.append({
+                "role": "assistant",
+                "content": message.content or "",
+                "tool_calls": [
+                    {
+                        "id": f"call_{i}",
+                        "type": "function",
+                        "function": {
+                            "name": tool_call.function.name,
+                            "arguments": tool_call.function.arguments
+                        }
+                    } for i, tool_call in enumerate(tool_calls)
+                ]
+            })
+
+            # Add tool results as tool messages
+            for i, (tool_call, result) in enumerate(zip(tool_calls, tool_results)):
+                follow_up_messages.append({
+                    "role": "tool",
+                    "tool_call_id": f"call_{i}",
+                    "content": str(result.get("result", result))
+                })
+
+            try:
+                # Make follow-up call without tools to get final response
+                from together import Together
+                import os
+                client = Together(api_key=os.environ.get("TOGETHER_API_KEY"))
+
+                # For triage agent, use JSON schema enforcement
+                if self.agent_stage == "triage":
+                    from agents.triage_agent import TriageResponse
+
+                    follow_up_response = client.chat.completions.create(
+                        model=self.model,
+                        messages=follow_up_messages,
+                        temperature=0.7,
+                        max_tokens=3000,
+                        response_format={
+                            "type": "json_schema",
+                            "json_schema": {
+                                "name": "triage_response",
+                                "schema": TriageResponse.get_json_schema()
+                            }
+                        }
+                    )
+                    print(f"   🎯 Using JSON schema enforcement for triage response")
+                else:
+                    follow_up_response = client.chat.completions.create(
+                        model=self.model,
+                        messages=follow_up_messages,
+                        temperature=0.7,
+                        max_tokens=3000
+                    )
+
+                final_content = follow_up_response.choices[0].message.content
+                print(f"   ✅ Follow-up response received: {repr(final_content[:200])}")
+
+                return {
+                    "success": True,
+                    "content": final_content,
+                    "usage": getattr(follow_up_response, 'usage', {}),
+                    "tool_calls": tool_results,
+                    "tools_used": tools_used
+                }
+
+            except Exception as e:
+                print(f"   ❌ Follow-up call failed: {e}")
+                # Fall back to original content
+                pass
+
+        # FINAL DECISION LOGGING
+        final_content = message.content or f"Executed {len(tool_calls)} tools: {', '.join(tools_used)}"
+        print(f"🎯 RESPONSE HANDLER FINAL DECISION:")
+        print(f"   📝 Returning content: {len(final_content)} chars")
+        print(f"   🔧 Tool calls executed: {len(tool_results)}")
+        print(f"   📊 Usage info: {getattr(response, 'usage', {})}")
+
+        # Show content being returned
+        if message.content:
+            print(f"   📄 Original content: {repr(message.content[:300])}")
+        else:
+            print(f"   📄 Generated content: {repr(final_content[:300])}")
+
+        # Analyze if this is expected behavior
+        if not tool_results and not message.content:
+            print(f"   🚨 ERROR: No tool calls AND no content - this is problematic!")
+        elif tool_results and not message.content:
+            print(f"   ⚠️  WARNING: Tools executed but no original content - may be incomplete!")
+
+        # Check if database write tool was called
+        database_writes = [t for t in tools_used if 'write_to_database' in t or 'database' in t]
+        if database_writes:
+            print(f"   ✅ Database write tools called: {database_writes}")
+        else:
+            print(f"   ❌ NO DATABASE WRITE TOOL CALLED - Post will NOT advance!")
+
+        return {
+            "success": True,
+            "content": final_content,
+            "usage": getattr(response, 'usage', {}),
+            "tool_calls": tool_results,
+            "tools_used": tools_used
+        }
+
     async def call_ollama_python_api(self, messages: List[Dict[str, str]], tools: List[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Use native Ollama Python API"""
         print(f"🟠 {self.agent_stage.upper()} OLLAMA PYTHON API REQUEST:")

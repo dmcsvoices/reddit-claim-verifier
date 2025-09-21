@@ -9,3 +9,4 @@ ollama==0.3.3
 openai>=1.0.0
 pytz==2025.2
 mcp-server-time==2025.8.4
+together>=1.0.0

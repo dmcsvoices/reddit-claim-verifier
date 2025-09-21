@@ -17,6 +17,48 @@ from tools.database_write import DatabaseWriteTool
 from tools.time_source import TimeSourceTool
 
 
+class TriageResponse:
+    """JSON schema for triage response"""
+
+    @staticmethod
+    def get_json_schema():
+        return {
+            "type": "object",
+            "properties": {
+                "decision": {
+                    "type": "string",
+                    "enum": ["RESEARCH_NEEDED", "REJECTED"],
+                    "description": "The triage decision"
+                },
+                "priority": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 10,
+                    "description": "Priority level from 1-10"
+                },
+                "claims": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "description": "List of factual claims identified"
+                },
+                "reasoning": {
+                    "type": "string",
+                    "description": "Explanation of the decision"
+                },
+                "confidence": {
+                    "type": "number",
+                    "minimum": 0.0,
+                    "maximum": 1.0,
+                    "description": "Confidence level from 0.0-1.0"
+                }
+            },
+            "required": ["decision", "priority", "claims", "reasoning", "confidence"],
+            "additionalProperties": False
+        }
+
+
 class TriageAgent(BaseAgent):
     def get_tools(self) -> List[Dict[str, Any]]:
         """Triage agent has access to time information for context"""
@@ -63,17 +105,29 @@ For posts that qualify, extract:
 - Category tags (health, science, politics, technology, etc.)
 
 OUTPUT REQUIREMENTS:
-After your analysis, you MUST provide a valid JSON object with this exact structure:
+You MUST respond ONLY in valid JSON format. Do not include any text before or after the JSON object.
+After your analysis, you MUST provide a valid JSON object with this exact structure.
+CRITICAL: The JSON must be syntactically correct and contain ALL required fields.
 
 ```json
 {
-  "decision": "RESEARCH_NEEDED" or "REJECTED",
-  "priority": [1-10],
-  "claims": ["claim 1", "claim 2", ...],
-  "reasoning": "your reasoning",
-  "confidence": [0.0-1.0]
+  "decision": "RESEARCH_NEEDED",
+  "priority": 7,
+  "claims": ["claim 1", "claim 2"],
+  "reasoning": "your reasoning here",
+  "confidence": 0.8
 }
 ```
+
+STRICT JSON REQUIREMENTS:
+- decision: MUST be exactly "RESEARCH_NEEDED" or "REJECTED" (no other values)
+- priority: MUST be an integer from 1 to 10
+- claims: MUST be an array of strings (even if empty: [])
+- reasoning: MUST be a string explaining your decision
+- confidence: MUST be a decimal between 0.0 and 1.0
+- ALL fields are required - do not omit any
+- Ensure proper JSON syntax with correct quotes, commas, and brackets
+- Do not include any text before or after the JSON object
 
 EXAMPLE OUTPUT:
 <think>
@@ -149,7 +203,7 @@ IMPORTANT: After your analysis, you MUST provide your response as a JSON object 
 
 ```json
 {{
-  "decision": "RESEARCH_NEEDED" or "REJECTED",
+  "decision": "RESEARCH_NEEDED",
   "priority": 7,
   "claims": ["claim 1", "claim 2"],
   "reasoning": "your reasoning here",
@@ -167,41 +221,98 @@ Note:
     def parse_triage_response(self, content: str) -> Dict[str, Any]:
         """Parse the JSON response from the LLM"""
         try:
+            # Remove <think> tags if present (for Qwen model)
+            content_cleaned = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL)
+
             # Extract JSON from code blocks (```json ... ```)
             json_pattern = r'```json\s*(.*?)\s*```'
-            json_match = re.search(json_pattern, content, re.DOTALL | re.MULTILINE)
-            
+            json_match = re.search(json_pattern, content_cleaned, re.DOTALL | re.MULTILINE)
+
             if json_match:
                 json_str = json_match.group(1).strip()
             else:
                 # Fallback: try to find JSON object without code blocks
-                # Look for { ... } pattern
+                # Look for { ... } pattern, find the last complete JSON object
                 json_pattern = r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
-                json_match = re.search(json_pattern, content, re.DOTALL)
-                if json_match:
-                    json_str = json_match.group(0)
+                json_matches = re.findall(json_pattern, content_cleaned, re.DOTALL)
+                if json_matches:
+                    # Take the last (and likely most complete) JSON object
+                    json_str = json_matches[-1]
                 else:
                     return {
                         "success": False,
                         "error": "No JSON object found in response"
                     }
+
+            # Clean up the JSON string - fix common issues
+            json_str = json_str.strip()
+
+            # Remove common prefixes that models add
+            if json_str.startswith('```json'):
+                json_str = json_str[7:]
+            if json_str.endswith('```'):
+                json_str = json_str[:-3]
+
+            json_str = json_str.strip()
+
+            # Fix the "or" pattern that the model might include
+            json_str = re.sub(r'"RESEARCH_NEEDED"\s+or\s+"REJECTED"', '"RESEARCH_NEEDED"', json_str)
+            json_str = re.sub(r'"REJECTED"\s+or\s+"RESEARCH_NEEDED"', '"REJECTED"', json_str)
+
+            # Fix common JSON issues
+            # Remove trailing commas before closing braces/brackets
+            json_str = re.sub(r',(\s*[}\]])', r'\1', json_str)
             
-            # Parse the JSON
+            # Parse the JSON with error recovery
             try:
                 result = json.loads(json_str)
             except json.JSONDecodeError as e:
-                return {
-                    "success": False,
-                    "error": f"Invalid JSON format: {str(e)}"
-                }
+                print(f"   ⚠️  JSON parse error: {e}")
+                print(f"   📄 Attempting JSON repair on: {json_str[:200]}...")
+
+                # Attempt to fix common JSON issues
+                try:
+                    # Try to fix incomplete JSON by adding missing closing braces
+                    fixed_json = json_str
+
+                    # Count open/close braces and brackets
+                    open_braces = fixed_json.count('{')
+                    close_braces = fixed_json.count('}')
+                    open_brackets = fixed_json.count('[')
+                    close_brackets = fixed_json.count(']')
+
+                    # Add missing closing braces/brackets
+                    if open_braces > close_braces:
+                        fixed_json += '}' * (open_braces - close_braces)
+                    if open_brackets > close_brackets:
+                        fixed_json += ']' * (open_brackets - close_brackets)
+
+                    # Try parsing the fixed JSON
+                    result = json.loads(fixed_json)
+                    print(f"   ✅ JSON repair successful!")
+
+                except json.JSONDecodeError:
+                    # If repair fails, return original error
+                    return {
+                        "success": False,
+                        "error": f"Invalid JSON format: {str(e)}",
+                        "attempted_repair": True
+                    }
             
+            # Handle common field name variations the model might use
+            if "claims_identified" in result and "claims" not in result:
+                result["claims"] = result.pop("claims_identified")
+
+            if "claims_list" in result and "claims" not in result:
+                result["claims"] = result.pop("claims_list")
+
             # Validate required fields
             if "decision" not in result:
                 return {"success": False, "error": "Missing 'decision' field in JSON"}
-            
+
             if result["decision"] not in ["RESEARCH_NEEDED", "REJECTED"]:
                 return {"success": False, "error": "Invalid decision value, must be RESEARCH_NEEDED or REJECTED"}
-            
+
             # Set defaults for optional fields
             result.setdefault("priority", 5)
             result.setdefault("claims", [])
@@ -232,9 +343,24 @@ Note:
             if "error" in response:
                 return response
             
-            message = response.get("message", {})
-            content = message.get("content", "")
-            
+            # Handle different response structures from different APIs
+            if "message" in response:
+                # Ollama/LM Studio format
+                message = response.get("message", {})
+                content = message.get("content", "")
+            else:
+                # Together AI format (returns content directly)
+                content = response.get("content", "")
+
+            # Debug: Print the raw content before parsing
+            print(f"🔍 TRIAGE DEBUG - Raw content from LLM ({len(content) if content else 0} chars):")
+            if content:
+                print(f"   Content: {repr(content[:500])}")  # First 500 chars with repr to see special chars
+                if len(content) > 500:
+                    print(f"   ... (truncated from {len(content)} total chars)")
+            else:
+                print(f"   Content is empty or None")
+
             # Parse the structured response
             parse_result = self.parse_triage_response(content)
             

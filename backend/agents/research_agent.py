@@ -29,45 +29,41 @@ class ResearchAgent(BaseAgent):
     def get_default_system_prompt(self) -> str:
         return """You are a research agent that investigates factual claims using web search.
 
-CRITICAL INSTRUCTION: ALWAYS start your work by calling get_current_time to get the current date and time. This is mandatory before beginning any research.
+🚨 CRITICAL: You MUST complete ALL steps below in a SINGLE response. Do NOT stop after just one tool call.
 
-Your workflow MUST be:
-1. FIRST: Call get_current_time (timezone="UTC", format="human") to establish temporal context
-2. THEN: Review claims identified by the triage agent
-3. Use web search to find credible sources about each claim (include current date in searches)
-4. Analyze evidence for and against each claim with temporal awareness
-5. Assess source credibility and recency relative to current date
-6. Synthesize findings into a research report with temporal context
+MANDATORY WORKFLOW - COMPLETE ALL STEPS:
 
-Use the current date/time to:
-- Contextualize all search results with current date
-- Assess if information is recent or outdated
-- Include temporal context in research analysis
-- Search for time-specific claims (e.g., "as of [current year]", "recent studies")
-- Avoid rejecting content due to perceived date inconsistencies
+STEP 1: Call get_current_time (timezone="UTC", format="human") to establish temporal context
+STEP 2: Use brave_web_search to research EACH claim provided by the triage agent
+STEP 3: Call write_to_database to record your findings and advance the post
 
-Research Strategy:
-1. MANDATORY: Get current date/time first
-2. Search for primary sources (research papers, official statistics, government data)
-3. Look for recent information and check if claims are outdated relative to current date
-4. Search for contradicting evidence and alternative viewpoints  
-5. Verify through multiple independent sources
-6. Note the credibility and potential bias of each source
+⚠️ IMPORTANT: Getting the current time is just the BEGINNING. You must continue with research and database write!
 
-Source Credibility Guidelines:
-- HIGH: Peer-reviewed research, government agencies, established scientific institutions
-- MEDIUM: Reputable news organizations, industry reports, expert interviews
-- LOW: Blogs, social media, opinion pieces, sites with clear bias
-- AVOID: Known misinformation sites, conspiracy theory sources
+Your complete workflow:
+1. 🕐 get_current_time - Get current date/time for context
+2. 🔍 brave_web_search - Research each factual claim (multiple searches per claim)
+3. 📝 write_to_database - Record findings and set next_stage
 
-For each claim:
+You MUST research claims using web search. For each claim:
 - Search with multiple query variations
-- Look for both supporting and contradicting evidence
-- Check publication dates (prefer recent sources)
-- Note if consensus exists or if topic is disputed
+- Look for credible sources (research papers, government data, expert sources)
+- Find both supporting and contradicting evidence
+- Check publication dates and source credibility
+- Note if scientific consensus exists
 
-Use brave_web_search to research claims, then write_to_database to record findings.
-Set next_stage to "response" if research is complete, or "rejected" if claims are unverifiable."""
+Source Credibility Priority:
+- HIGH: Peer-reviewed research, government agencies, scientific institutions
+- MEDIUM: Reputable news organizations, expert interviews, industry reports
+- LOW: Blogs, opinion pieces, biased sources
+- AVOID: Conspiracy sites, known misinformation sources
+
+After researching all claims, you MUST call write_to_database with:
+- post_id: [provided post ID]
+- stage: "research"
+- content: your research findings, sources, fact_check_status, confidence
+- next_stage: "response" (if research complete) or "rejected" (if unverifiable)
+
+🚨 REMEMBER: Complete ALL three steps in one response - time, search, database write!"""
     
     def build_messages(self, post_data: Dict[str, Any], context: Dict[str, Any] = None) -> List[Dict[str, str]]:
         # Extract post info
@@ -90,35 +86,7 @@ Set next_stage to "response" if research is complete, or "rejected" if claims ar
             {"role": "system", "content": self.get_system_prompt()},
             {
                 "role": "user", 
-                "content": f"""Research the factual claims from this Reddit post:
-
-**ORIGINAL POST:**
-Post ID: {post_id}
-Title: "{title}"
-Content: {body}
-Priority: {priority}/10
-
-**TRIAGE ANALYSIS:**
-{reasoning}
-
-**CLAIMS TO RESEARCH:**
-{json.dumps(claims, indent=2)}
-
-**YOUR RESEARCH PROCESS:**
-For EACH claim:
-1. Use brave_web_search with multiple specific queries
-2. Search for primary sources and authoritative information
-3. Look for both supporting and contradicting evidence
-4. Verify information through multiple independent sources
-5. Check recency and relevance of sources
-
-IMPORTANT: You MUST use write_to_database with these EXACT parameters:
-- post_id: {post_id} (THIS IS THE CORRECT POST ID - DO NOT CHANGE IT)
-- stage: "research"
-- content: your findings with sources, fact_check_status, reasoning, confidence
-- next_stage: "response" (if research complete) or "rejected" (if unverifiable)
-
-Start your research now using the available tools."""
+                "content": f"🔍 RESEARCH TASK: Complete ALL three steps for this Reddit post:\n\n**ORIGINAL POST:**\nPost ID: {post_id}\nTitle: \"{title}\"\nContent: {body}\nPriority: {priority}/10\n\n**TRIAGE ANALYSIS:**\n{reasoning}\n\n**CLAIMS TO RESEARCH:**\n{json.dumps(claims, indent=2)}\n\n🚨 COMPLETE WORKFLOW REQUIRED:\n\nSTEP 1: Call get_current_time to establish current date/time context\nSTEP 2: Research EACH claim using brave_web_search:\n   - Use multiple search queries per claim\n   - Find credible sources (government data, research papers, expert sources)\n   - Look for both supporting and contradicting evidence\n   - Check source dates and credibility\nSTEP 3: Call write_to_database with EXACT parameters:\n   - post_id: {post_id}\n   - stage: \"research\"\n   - content: {{your research findings, sources, fact_check_status, confidence}}\n   - next_stage: \"response\" (if complete) or \"rejected\" (if unverifiable)\n\n⚠️ CRITICAL: You must complete ALL THREE steps in this single response. Do not stop after just getting the time!\n\nStart now by calling get_current_time, then research each claim, then write results to database."
             }
         ]
     
