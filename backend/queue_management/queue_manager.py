@@ -214,6 +214,56 @@ class DatabaseManager:
 
                 return stats
 
+    async def process_scheduled_retries(self) -> int:
+        """Process posts that are scheduled for retry and mark fallback events as resolved"""
+        async with self.get_connection() as conn:
+            with conn.cursor() as cur:
+                # Find posts that are ready for retry based on fallback_events
+                cur.execute("""
+                    SELECT DISTINCT fe.post_id, p.queue_stage
+                    FROM fallback_events fe
+                    JOIN posts p ON fe.post_id = p.id
+                    WHERE fe.status = 'active'
+                    AND fe.retry_scheduled_for IS NOT NULL
+                    AND fe.retry_scheduled_for <= NOW()
+                    AND p.queue_status != 'pending'
+                """)
+
+                ready_posts = cur.fetchall()
+                processed_count = 0
+
+                for post_id, current_stage in ready_posts:
+                    try:
+                        # Reset post to pending status for retry
+                        cur.execute("""
+                            UPDATE posts
+                            SET queue_status = 'pending',
+                                updated_at = NOW()
+                            WHERE id = %s
+                        """, (post_id,))
+
+                        # Mark related fallback events as resolved
+                        cur.execute("""
+                            UPDATE fallback_events
+                            SET status = 'resolved',
+                                resolved_at = NOW()
+                            WHERE post_id = %s
+                            AND status = 'active'
+                            AND retry_scheduled_for <= NOW()
+                        """, (post_id,))
+
+                        processed_count += 1
+                        print(f"   ⏰ Retrying post {post_id} in {current_stage} stage after scheduled delay")
+
+                    except Exception as e:
+                        print(f"   ❌ Failed to retry post {post_id}: {e}")
+                        continue
+
+                if processed_count > 0:
+                    conn.commit()
+
+                return processed_count
+
 
 class QueueManager:
     """Main queue management system"""
@@ -448,6 +498,17 @@ class QueueManager:
                     print(f"⏸️  [{timestamp}] {stage} queue: PAUSED (poll #{poll_count})")
                     await asyncio.sleep(QUEUE_CONFIG["poll_intervals"][stage])
                     continue
+
+                # Check for scheduled retries (only do this for triage stage to avoid duplicate processing)
+                if stage == "triage" and poll_count % 10 == 0:  # Check every 10 polls
+                    try:
+                        retry_count = await self.db.process_scheduled_retries()
+                        if retry_count > 0:
+                            timestamp = datetime.now().strftime("%H:%M:%S")
+                            print(f"⏰ [{timestamp}] Processed {retry_count} scheduled retries")
+                    except Exception as e:
+                        timestamp = datetime.now().strftime("%H:%M:%S")
+                        print(f"❌ [{timestamp}] Failed to process scheduled retries: {e}")
 
                 # Show regular polling activity
                 timestamp = datetime.now().strftime("%H:%M:%S")

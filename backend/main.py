@@ -107,6 +107,35 @@ async def setup_database_schema():
                 );
             """)
 
+            # Create fallback_events table for tracking when fallback mechanisms are used
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS fallback_events (
+                    id SERIAL PRIMARY KEY,
+                    post_id INTEGER REFERENCES posts(id),
+                    stage VARCHAR(50) NOT NULL,
+                    reason VARCHAR(200) NOT NULL,
+                    search_failures INTEGER DEFAULT 0,
+                    search_successes INTEGER DEFAULT 0,
+                    error_details JSONB,
+                    retry_scheduled_for TIMESTAMP,
+                    retry_count INTEGER DEFAULT 0,
+                    status VARCHAR(50) DEFAULT 'active',
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    resolved_at TIMESTAMP
+                );
+            """)
+
+            # Create index for faster fallback event queries
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_fallback_events_status
+                ON fallback_events(status);
+            """)
+
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_fallback_events_post_stage
+                ON fallback_events(post_id, stage);
+            """)
+
             # Insert default retry settings
             cur.execute("""
                 INSERT INTO queue_settings (setting_key, setting_value, description)
@@ -436,6 +465,154 @@ async def queue_stats():
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get queue stats: {str(e)}")
+
+
+@app.get("/queue/fallback/stats")
+async def fallback_stats():
+    """Get fallback event statistics"""
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            # Total fallback count
+            cur.execute("SELECT COUNT(*) FROM fallback_events WHERE status = 'active'")
+            total_count = cur.fetchone()[0]
+
+            # Fallback by stage
+            cur.execute("""
+                SELECT stage, COUNT(*) as count
+                FROM fallback_events
+                WHERE status = 'active'
+                GROUP BY stage
+                ORDER BY count DESC
+            """)
+            by_stage = dict(cur.fetchall())
+
+            # Fallback by reason
+            cur.execute("""
+                SELECT reason, COUNT(*) as count
+                FROM fallback_events
+                WHERE status = 'active'
+                GROUP BY reason
+                ORDER BY count DESC
+            """)
+            by_reason = dict(cur.fetchall())
+
+            # Recent fallback events (last 24 hours)
+            cur.execute("""
+                SELECT COUNT(*)
+                FROM fallback_events
+                WHERE status = 'active'
+                AND created_at > NOW() - INTERVAL '24 hours'
+            """)
+            recent_count = cur.fetchone()[0]
+
+        conn.close()
+
+        return {
+            "total_count": total_count,
+            "by_stage": by_stage,
+            "by_reason": by_reason,
+            "recent_count": recent_count,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get fallback stats: {str(e)}")
+
+
+@app.get("/queue/fallback/posts")
+async def fallback_posts():
+    """Get posts affected by fallback mechanism"""
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT DISTINCT
+                    fe.post_id,
+                    p.title,
+                    p.author,
+                    p.queue_stage,
+                    fe.stage as fallback_stage,
+                    fe.reason,
+                    fe.created_at as fallback_time,
+                    fe.retry_count,
+                    fe.retry_scheduled_for
+                FROM fallback_events fe
+                JOIN posts p ON fe.post_id = p.id
+                WHERE fe.status = 'active'
+                ORDER BY fe.created_at DESC
+                LIMIT 100
+            """)
+
+            posts = []
+            for row in cur.fetchall():
+                posts.append({
+                    "post_id": row[0],
+                    "title": row[1],
+                    "author": row[2],
+                    "current_stage": row[3],
+                    "fallback_stage": row[4],
+                    "reason": row[5],
+                    "fallback_time": row[6].isoformat() if row[6] else None,
+                    "retry_count": row[7],
+                    "retry_scheduled_for": row[8].isoformat() if row[8] else None
+                })
+
+        conn.close()
+
+        return {
+            "posts": posts,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get fallback posts: {str(e)}")
+
+
+@app.post("/queue/fallback/retry")
+async def retry_fallback_posts(request: dict):
+    """Schedule fallback posts for retry"""
+    try:
+        post_ids = request.get("post_ids", [])
+        timeout_minutes = request.get("timeout_minutes", 30)
+
+        if not post_ids:
+            raise HTTPException(status_code=400, detail="No post IDs provided")
+
+        retry_time = datetime.now(timezone.utc) + timedelta(minutes=timeout_minutes)
+
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            # Update fallback events with retry schedule
+            cur.execute("""
+                UPDATE fallback_events
+                SET retry_scheduled_for = %s, retry_count = retry_count + 1
+                WHERE post_id = ANY(%s) AND status = 'active'
+            """, (retry_time, post_ids))
+
+            # Reset posts to appropriate stage for retry
+            cur.execute("""
+                UPDATE posts
+                SET queue_status = 'pending',
+                    retry_count = retry_count + 1,
+                    updated_at = NOW()
+                WHERE id = ANY(%s)
+            """, (post_ids,))
+
+            conn.commit()
+            updated_count = cur.rowcount
+
+        conn.close()
+
+        return {
+            "success": True,
+            "updated_posts": updated_count,
+            "retry_scheduled_for": retry_time.isoformat(),
+            "message": f"Scheduled {updated_count} posts for retry in {timeout_minutes} minutes"
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to schedule retry: {str(e)}")
 
 
 @app.get("/queue/pending/{stage}")

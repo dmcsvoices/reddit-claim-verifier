@@ -52,7 +52,31 @@ class BaseAgent(ABC):
             user=os.getenv("DB_USER", "redditmon"),
             password=os.getenv("DB_PASSWORD", "supersecret")
         )
-    
+
+    async def _record_fallback_event(self, post_id: int, stage: str, reason: str,
+                                   search_failures: int = 0, search_successes: int = 0,
+                                   error_details: Dict[str, Any] = None):
+        """Record a fallback event to the database for tracking and analysis"""
+        try:
+            with self._get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        INSERT INTO fallback_events
+                        (post_id, stage, reason, search_failures, search_successes, error_details)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                    """, (
+                        post_id,
+                        stage,
+                        reason,
+                        search_failures,
+                        search_successes,
+                        json.dumps(error_details or {})
+                    ))
+                    conn.commit()
+                    print(f"   📊 Fallback event recorded: post_id={post_id}, stage={stage}")
+        except Exception as e:
+            print(f"   ❌ Failed to record fallback event: {e}")
+
     async def _validate_model_async(self):
         """Validate that the configured model exists on the endpoint (non-blocking)"""
         try:
@@ -309,6 +333,21 @@ class BaseAgent(ABC):
         print(f"   Model: {self.model}")
         print(f"   API Key Env: {self.api_key_env}")
 
+        # LOG THE ACTUAL MESSAGES BEING SENT
+        print(f"📨 {self.agent_stage.upper()} MESSAGES TO TOGETHER AI:")
+        for i, msg in enumerate(messages):
+            role = msg.get('role', 'unknown')
+            content = msg.get('content', '')
+            print(f"   Message {i+1} ({role}): {len(content)} chars")
+            if role == 'system':
+                print(f"      System prompt preview: {repr(content[:200])}...")
+            elif role == 'user':
+                print(f"      User message preview: {repr(content[:300])}...")
+                if len(content) > 300:
+                    print(f"      User message full: {repr(content)}")
+            else:
+                print(f"      Content preview: {repr(content[:200])}...")
+
         try:
             from together import Together
             import os
@@ -339,21 +378,20 @@ class BaseAgent(ABC):
                     tool_name = tool.get('function', {}).get('name', 'unknown')
                     print(f"      - {tool_name}")
 
-                # Force the model to call the first available tool
-                # This prevents the model from hallucinating non-existent tool names
-                if len(tools) > 0:
-                    first_tool_name = tools[0].get('function', {}).get('name')
-                    if first_tool_name:
-                        request_params["tool_choice"] = {
-                            "type": "function",
-                            "function": {"name": first_tool_name}
-                        }
-                        print(f"   🎯 Forcing tool choice: {first_tool_name}")
+                # Let all agents choose their tools freely
+                # Triage agent has its own JSON parsing mechanism
+                print(f"   🆓 Allowing free tool choice for {self.agent_stage} agent")
 
             print(f"   📤 Making Together API request...")
 
-            # Make the API call
-            response = client.chat.completions.create(**request_params)
+            # Make the API call with timeout
+            import asyncio
+
+            async def make_api_call():
+                return client.chat.completions.create(**request_params)
+
+            # Add 30 second timeout
+            response = await asyncio.wait_for(make_api_call(), timeout=30.0)
 
             print(f"   ✅ Together API call successful")
 
@@ -369,6 +407,10 @@ class BaseAgent(ABC):
                     "tool_calls": []
                 }
 
+        except asyncio.TimeoutError:
+            error_msg = "Together AI API request timed out after 30 seconds"
+            print(f"   ⏰ Timeout: {error_msg}")
+            return {"error": error_msg}
         except ImportError:
             error_msg = "Together library not installed. Run: pip install together"
             print(f"   ❌ Error: {error_msg}")
@@ -398,10 +440,22 @@ class BaseAgent(ABC):
 
             # Execute the tool
             # Convert Together API format to standard tool call format
+            # Parse JSON string arguments from Together AI
+            try:
+                if isinstance(function_args, str):
+                    parsed_args = json.loads(function_args)
+                elif isinstance(function_args, dict):
+                    parsed_args = function_args
+                else:
+                    parsed_args = {}
+            except json.JSONDecodeError as e:
+                print(f"      ❌ Failed to parse arguments JSON: {e}")
+                parsed_args = {}
+
             standard_tool_call = {
                 "function": {
                     "name": function_name,
-                    "arguments": function_args if isinstance(function_args, dict) else {}
+                    "arguments": parsed_args
                 }
             }
             result = await self.execute_tool_call(standard_tool_call)
@@ -436,10 +490,10 @@ class BaseAgent(ABC):
                 tool_name = tool_calls[i].function.name if i < len(tool_calls) else "unknown"
                 print(f"      Tool {i+1} ({tool_name}): {result}")
 
-        # For triage agent, we need to make a follow-up call with tool results
-        # to get the final JSON response
-        if self.agent_stage == "triage" and tool_results:
-            print(f"   🔄 Making follow-up call to get final triage JSON...")
+        # Triage agent has its own process method that handles JSON parsing directly
+        # No follow-up call needed - let it handle the response parsing itself
+        if False:  # Disabled follow-up call for now
+            print(f"   🔄 Making follow-up call to get final {self.agent_stage} response...")
 
             # Prepare messages with tool results
             follow_up_messages = messages.copy()
@@ -541,6 +595,59 @@ class BaseAgent(ABC):
             print(f"   ✅ Database write tools called: {database_writes}")
         else:
             print(f"   ❌ NO DATABASE WRITE TOOL CALLED - Post will NOT advance!")
+
+            # FALLBACK: For research agents, automatically call write_to_database if missing
+            if self.agent_stage == "research" and hasattr(self, '_current_post_id'):
+                print(f"   🔧 FALLBACK: Auto-calling write_to_database for research agent")
+
+                # Analyze what happened with the searches
+                search_failures = [result for result in tool_results if isinstance(result, dict) and "error" in result]
+                search_successes = [result for result in tool_results if isinstance(result, dict) and "success" in result and result["success"]]
+
+                # Create fallback database write
+                fallback_tool_call = {
+                    "function": {
+                        "name": "write_to_database",
+                        "arguments": {
+                            "post_id": self._current_post_id,
+                            "stage": "research",
+                            "content": {
+                                "result": "Research completed with search limitations",
+                                "search_failures": len(search_failures),
+                                "search_successes": len(search_successes),
+                                "search_errors": [f"Search failed: {result.get('error', 'Unknown error')}" for result in search_failures],
+                                "fact_check_status": "limited_research" if search_failures else "research_completed",
+                                "confidence": 0.3 if search_failures else 0.7,
+                                "note": "Fallback database write due to incomplete tool execution"
+                            },
+                            "next_stage": "response"
+                        }
+                    }
+                }
+
+                try:
+                    fallback_result = await self.execute_tool_call(fallback_tool_call)
+                    tool_results.append(fallback_result)
+                    tools_used.append("write_to_database")
+                    print(f"   ✅ FALLBACK SUCCESSFUL: Database write executed")
+                    print(f"   📝 Fallback result: {fallback_result}")
+
+                    # Record fallback event to database
+                    await self._record_fallback_event(
+                        post_id=self._current_post_id,
+                        stage="research",
+                        reason="Missing database write after search failures/rate limits",
+                        search_failures=len(search_failures),
+                        search_successes=len(search_successes),
+                        error_details={
+                            "search_errors": [f"Search failed: {result.get('error', 'Unknown error')}" for result in search_failures],
+                            "tool_results_count": len(tool_results),
+                            "original_content_present": bool(message.content)
+                        }
+                    )
+
+                except Exception as e:
+                    print(f"   ❌ FALLBACK FAILED: {e}")
 
         return {
             "success": True,
@@ -719,12 +826,15 @@ class BaseAgent(ABC):
     async def process(self, post_data: Dict[str, Any], context: Dict[str, Any] = None) -> Dict[str, Any]:
         """Main processing method for the agent"""
         try:
+            # Track current post_id for fallback database writes
+            self._current_post_id = post_data.get('id')
+
             # Build messages for this processing stage
             messages = self.build_messages(post_data, context)
-            
+
             # Call Ollama with tools
             response = await self.call_llm(messages, self.tools)
-            
+
             # Handle response and tool calls
             result = await self.handle_response(response)
             

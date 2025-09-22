@@ -45,6 +45,15 @@ function App() {
     selectedPost: null
   })
 
+  // Fallback posts state
+  const [fallbackStats, setFallbackStats] = useState<any>(null)
+  const [fallbackPostsModal, setFallbackPostsModal] = useState<{visible: boolean, posts: any[], selectedPosts: number[], timeoutMinutes: number}>({
+    visible: false,
+    posts: [],
+    selectedPosts: [],
+    timeoutMinutes: 30
+  })
+
   // Post tab state
   const [completedPosts, setCompletedPosts] = useState<any[]>([])
   const [postModal, setPostModal] = useState({
@@ -322,6 +331,53 @@ function App() {
       }))
     } catch (error) {
       console.error('Failed to get rejected posts:', error)
+    }
+  }
+
+  const getFallbackStats = async () => {
+    try {
+      const response = await fetch(`${API_BASE}/queue/fallback/stats`)
+      const data = await response.json()
+      setFallbackStats(data)
+    } catch (error) {
+      console.error('Failed to get fallback stats:', error)
+    }
+  }
+
+  const getFallbackPosts = async () => {
+    try {
+      const response = await fetch(`${API_BASE}/queue/fallback/posts`)
+      const data = await response.json()
+      setFallbackPostsModal(prev => ({
+        ...prev,
+        visible: true,
+        posts: data.posts || [],
+        selectedPosts: []
+      }))
+    } catch (error) {
+      console.error('Failed to get fallback posts:', error)
+    }
+  }
+
+  const retryFallbackPosts = async () => {
+    try {
+      const response = await fetch(`${API_BASE}/queue/fallback/retry`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          post_ids: fallbackPostsModal.selectedPosts,
+          timeout_minutes: fallbackPostsModal.timeoutMinutes
+        })
+      })
+      const data = await response.json()
+      console.log('Retry scheduled:', data.message)
+
+      // Close modal and refresh stats
+      setFallbackPostsModal(prev => ({ ...prev, visible: false, selectedPosts: [] }))
+      getFallbackStats()
+      getQueueStats()
+    } catch (error) {
+      console.error('Failed to retry fallback posts:', error)
     }
   }
 
@@ -777,6 +833,7 @@ function App() {
       getQueueStatus()
       getQueueStats()
       getQueueSettings()
+      getFallbackStats()
     }
     initializeData()
   }, [])
@@ -1633,6 +1690,90 @@ function App() {
                     }
                     return null
                   })()}
+
+                  {/* Fallback Events Box */}
+                  {(() => {
+                    const fallbackCount = fallbackStats?.total_count || 0
+                    const colors = { bg: 'rgba(255, 165, 0, 0.1)', border: '#ffa500', text: '#ffa500' }
+
+                    if (fallbackCount > 0) {
+                      return (
+                        <div style={{
+                          background: colors.bg,
+                          border: `2px solid ${colors.border}`,
+                          borderRadius: '15px',
+                          padding: '25px',
+                          boxShadow: `0 0 20px ${colors.border}40`,
+                          cursor: 'pointer',
+                          transition: 'all 0.2s ease'
+                        }}
+                        onClick={getFallbackPosts}
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.transform = 'scale(1.02)'
+                          e.currentTarget.style.boxShadow = `0 0 30px ${colors.border}60`
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.transform = 'scale(1)'
+                          e.currentTarget.style.boxShadow = `0 0 20px ${colors.border}40`
+                        }}>
+                          <h3 style={{
+                            color: colors.text,
+                            marginBottom: '20px',
+                            textTransform: 'uppercase',
+                            textAlign: 'center',
+                            fontSize: '1.3em',
+                            textShadow: `0 0 10px ${colors.border}`
+                          }}>
+                            ⚡ FALLBACK EVENTS
+                          </h3>
+
+                          {/* Total Fallback Posts Display */}
+                          <div style={{
+                            textAlign: 'center',
+                            marginBottom: '25px',
+                            padding: '15px',
+                            background: 'rgba(0, 0, 0, 0.3)',
+                            borderRadius: '10px'
+                          }}>
+                            <div style={{
+                              fontSize: '3em',
+                              color: colors.text,
+                              fontWeight: 'bold',
+                              textShadow: `0 0 15px ${colors.border}`
+                            }}>
+                              {fallbackCount}
+                            </div>
+                            <div style={{ color: '#ffffff', fontSize: '1.1em' }}>
+                              API Failures
+                            </div>
+                          </div>
+
+                          {/* Recent count if available */}
+                          {fallbackStats?.recent_count > 0 && (
+                            <div style={{
+                              textAlign: 'center',
+                              color: '#ffffff',
+                              fontSize: '0.9em',
+                              marginBottom: '10px'
+                            }}>
+                              {fallbackStats.recent_count} in last 24h
+                            </div>
+                          )}
+
+                          {/* Click to view details */}
+                          <div style={{
+                            textAlign: 'center',
+                            color: '#ffffff',
+                            fontSize: '0.9em',
+                            opacity: 0.8
+                          }}>
+                            👆 Click to manage affected posts
+                          </div>
+                        </div>
+                      )
+                    }
+                    return null
+                  })()}
                 </div>
 
                 {/* Refresh Button for Queue Statistics */}
@@ -1642,6 +1783,7 @@ function App() {
                       console.log('Refresh Statistics button clicked');
                       try {
                         await getQueueStats();
+                        await getFallbackStats();
                         console.log('Queue stats refreshed successfully');
                       } catch (error) {
                         console.error('Error refreshing queue stats:', error);
@@ -2864,6 +3006,280 @@ function App() {
                   padding: '12px 30px'
                 }}
                 className="synthwave-button"
+              >
+                CLOSE
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Fallback Posts Modal */}
+      {fallbackPostsModal.visible && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(0, 0, 0, 0.8)',
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+          zIndex: 1000
+        }}>
+          <div style={{
+            background: 'linear-gradient(135deg, #0f0f23 0%, #1a1a3a 50%, #0f0f23 100%)',
+            border: '2px solid #ffa500',
+            borderRadius: '15px',
+            padding: '30px',
+            maxWidth: '90%',
+            maxHeight: '90%',
+            overflow: 'auto',
+            minWidth: '800px',
+            boxShadow: '0 0 50px rgba(255, 165, 0, 0.3)'
+          }}>
+            <div style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              marginBottom: '25px'
+            }}>
+              <h2 style={{
+                color: '#ffa500',
+                fontSize: '1.8em',
+                textTransform: 'uppercase',
+                textShadow: '0 0 10px #ffa500',
+                margin: 0
+              }}>
+                ⚡ FALLBACK EVENTS
+                <span style={{ color: '#ffffff', marginLeft: '10px' }}>
+                  ({fallbackPostsModal.posts.length})
+                </span>
+              </h2>
+              <button
+                onClick={() => setFallbackPostsModal({visible: false, posts: [], selectedPosts: [], timeoutMinutes: 30})}
+                style={{
+                  background: 'transparent',
+                  border: '2px solid #ffa500',
+                  borderRadius: '50%',
+                  width: '40px',
+                  height: '40px',
+                  color: '#ffa500',
+                  fontSize: '20px',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center'
+                }}
+              >
+                ×
+              </button>
+            </div>
+
+            {/* Retry Controls */}
+            <div style={{
+              background: 'rgba(255, 165, 0, 0.1)',
+              border: '1px solid rgba(255, 165, 0, 0.3)',
+              borderRadius: '10px',
+              padding: '20px',
+              marginBottom: '20px'
+            }}>
+              <h3 style={{ color: '#ffa500', marginBottom: '15px', fontSize: '1.2em' }}>
+                🔄 RETRY CONFIGURATION
+              </h3>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: '15px', marginBottom: '15px' }}>
+                <label style={{ color: '#ffffff', minWidth: '150px' }}>
+                  Retry timeout (minutes):
+                </label>
+                <input
+                  type="number"
+                  value={fallbackPostsModal.timeoutMinutes}
+                  onChange={(e) => setFallbackPostsModal(prev => ({
+                    ...prev,
+                    timeoutMinutes: parseInt(e.target.value) || 30
+                  }))}
+                  style={{
+                    background: 'rgba(0, 0, 0, 0.3)',
+                    border: '1px solid #ffa500',
+                    borderRadius: '5px',
+                    color: '#ffffff',
+                    padding: '8px 12px',
+                    width: '100px'
+                  }}
+                  min="1"
+                  max="1440"
+                />
+                <span style={{ color: '#8892b0', fontSize: '0.9em' }}>
+                  Posts will be retried after this delay
+                </span>
+              </div>
+
+              <div style={{ display: 'flex', gap: '10px' }}>
+                <button
+                  onClick={() => {
+                    const allPostIds = fallbackPostsModal.posts.map(p => p.post_id)
+                    setFallbackPostsModal(prev => ({ ...prev, selectedPosts: allPostIds }))
+                  }}
+                  style={{
+                    background: 'transparent',
+                    border: '1px solid #ffa500',
+                    borderRadius: '5px',
+                    color: '#ffa500',
+                    padding: '8px 16px',
+                    cursor: 'pointer',
+                    fontSize: '0.9em'
+                  }}
+                >
+                  Select All
+                </button>
+                <button
+                  onClick={() => setFallbackPostsModal(prev => ({ ...prev, selectedPosts: [] }))}
+                  style={{
+                    background: 'transparent',
+                    border: '1px solid #ffa500',
+                    borderRadius: '5px',
+                    color: '#ffa500',
+                    padding: '8px 16px',
+                    cursor: 'pointer',
+                    fontSize: '0.9em'
+                  }}
+                >
+                  Clear Selection
+                </button>
+                <button
+                  onClick={retryFallbackPosts}
+                  disabled={fallbackPostsModal.selectedPosts.length === 0}
+                  style={{
+                    background: fallbackPostsModal.selectedPosts.length > 0 ? 'linear-gradient(45deg, #ffa500, #ff8c00)' : 'rgba(100, 100, 100, 0.3)',
+                    border: 'none',
+                    borderRadius: '5px',
+                    color: '#ffffff',
+                    padding: '8px 16px',
+                    cursor: fallbackPostsModal.selectedPosts.length > 0 ? 'pointer' : 'not-allowed',
+                    fontSize: '0.9em',
+                    fontWeight: 'bold'
+                  }}
+                >
+                  Retry Selected ({fallbackPostsModal.selectedPosts.length})
+                </button>
+              </div>
+            </div>
+
+            {/* Posts List */}
+            <div style={{ maxHeight: '500px', overflow: 'auto' }}>
+              {fallbackPostsModal.posts.map((post, index) => (
+                <div key={post.post_id} style={{
+                  background: 'rgba(255, 165, 0, 0.05)',
+                  border: '1px solid rgba(255, 165, 0, 0.2)',
+                  borderRadius: '8px',
+                  padding: '15px',
+                  marginBottom: '10px',
+                  cursor: 'pointer',
+                  transition: 'all 0.2s ease'
+                }}
+                onClick={() => {
+                  const isSelected = fallbackPostsModal.selectedPosts.includes(post.post_id)
+                  if (isSelected) {
+                    setFallbackPostsModal(prev => ({
+                      ...prev,
+                      selectedPosts: prev.selectedPosts.filter(id => id !== post.post_id)
+                    }))
+                  } else {
+                    setFallbackPostsModal(prev => ({
+                      ...prev,
+                      selectedPosts: [...prev.selectedPosts, post.post_id]
+                    }))
+                  }
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: '15px' }}>
+                    <input
+                      type="checkbox"
+                      checked={fallbackPostsModal.selectedPosts.includes(post.post_id)}
+                      onChange={() => {}} // Handled by div onClick
+                      style={{
+                        marginTop: '5px',
+                        accentColor: '#ffa500'
+                      }}
+                    />
+
+                    <div style={{ flex: 1 }}>
+                      <div style={{
+                        color: '#ffffff',
+                        fontSize: '1.1em',
+                        fontWeight: 'bold',
+                        marginBottom: '8px'
+                      }}>
+                        {post.title}
+                      </div>
+
+                      <div style={{
+                        display: 'grid',
+                        gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+                        gap: '10px',
+                        color: '#8892b0',
+                        fontSize: '0.9em'
+                      }}>
+                        <div>👤 u/{post.author}</div>
+                        <div>📊 Stage: {post.current_stage}</div>
+                        <div>⚡ Fallback: {post.fallback_stage}</div>
+                        <div>🔢 Retries: {post.retry_count || 0}</div>
+                      </div>
+
+                      <div style={{
+                        marginTop: '8px',
+                        padding: '8px',
+                        background: 'rgba(0, 0, 0, 0.2)',
+                        borderRadius: '5px',
+                        fontSize: '0.85em',
+                        color: '#ff9999'
+                      }}>
+                        <strong>Reason:</strong> {post.reason}
+                      </div>
+
+                      {post.fallback_time && (
+                        <div style={{
+                          marginTop: '5px',
+                          fontSize: '0.8em',
+                          color: '#8892b0'
+                        }}>
+                          Fallback occurred: {new Date(post.fallback_time).toLocaleString()}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+
+              {fallbackPostsModal.posts.length === 0 && (
+                <div style={{
+                  textAlign: 'center',
+                  color: '#8892b0',
+                  fontSize: '1.1em',
+                  padding: '40px'
+                }}>
+                  No fallback events found
+                </div>
+              )}
+            </div>
+
+            <div style={{
+              marginTop: '25px',
+              textAlign: 'center'
+            }}>
+              <button
+                onClick={() => setFallbackPostsModal({visible: false, posts: [], selectedPosts: [], timeoutMinutes: 30})}
+                style={{
+                  background: 'linear-gradient(45deg, #ffa500, #ff8c00)',
+                  border: 'none',
+                  borderRadius: '10px',
+                  color: '#ffffff',
+                  padding: '12px 30px',
+                  fontSize: '1em',
+                  fontWeight: 'bold',
+                  cursor: 'pointer'
+                }}
               >
                 CLOSE
               </button>
