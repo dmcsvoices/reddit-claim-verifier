@@ -5,6 +5,8 @@ Uses Brave Search API to find information about factual claims
 import os
 import json
 import httpx
+import asyncio
+import time
 from typing import Dict, Any, Optional
 
 
@@ -85,18 +87,31 @@ class BraveSearchTool:
             params["freshness"] = kwargs["freshness"]
         
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(
-                    "https://api.search.brave.com/res/v1/web/search",
-                    headers=headers,
-                    params=params
-                )
-                
-            if response.status_code != 200:
-                return {
-                    "error": f"Search failed with status {response.status_code}: {response.text}",
-                    "query": query
-                }
+            # Retry logic for rate limiting
+            max_retries = 3
+            base_delay = 1.0
+
+            for attempt in range(max_retries):
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    response = await client.get(
+                        "https://api.search.brave.com/res/v1/web/search",
+                        headers=headers,
+                        params=params
+                    )
+
+                if response.status_code == 200:
+                    break
+                elif response.status_code == 429 and attempt < max_retries - 1:
+                    # Rate limited, wait and retry
+                    delay = base_delay * (2 ** attempt)  # Exponential backoff
+                    print(f"   ⏰ Rate limited, retrying in {delay}s (attempt {attempt + 1}/{max_retries})")
+                    await asyncio.sleep(delay)
+                    continue
+                else:
+                    return {
+                        "error": f"Search failed with status {response.status_code}: {response.text}",
+                        "query": query
+                    }
                 
             data = response.json()
             

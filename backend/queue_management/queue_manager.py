@@ -450,7 +450,7 @@ class QueueManager:
     
     async def handle_processing_error(self, post_id: int, stage: str, error: str):
         """Handle processing errors with configurable retry logic"""
-        async with self.get_connection() as conn:
+        async with self.db.get_connection() as conn:
             with conn.cursor() as cur:
                 # Get max retry attempts from settings
                 cur.execute("SELECT setting_value FROM queue_settings WHERE setting_key = 'max_retry_attempts'")

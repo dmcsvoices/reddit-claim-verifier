@@ -29,15 +29,18 @@ class ResearchAgent(BaseAgent):
     def get_default_system_prompt(self) -> str:
         return """You are a research agent that investigates factual claims using web search.
 
-🚨 CRITICAL: You MUST complete ALL steps below in a SINGLE response. Do NOT stop after just one tool call.
+🚨 CRITICAL: You MUST make ALL THREE TOOL CALLS in your SINGLE response. Do NOT stop after just one tool call.
 
-MANDATORY WORKFLOW - COMPLETE ALL STEPS:
+MANDATORY WORKFLOW - ALL TOOLS IN ONE RESPONSE:
 
-STEP 1: Call get_current_time (timezone="UTC", format="human") to establish temporal context
-STEP 2: Use brave_web_search to research EACH claim provided by the triage agent
-STEP 3: Call write_to_database to record your findings and advance the post
+You must call ALL THREE tools in your response:
+1. get_current_time (timezone="UTC", format="human")
+2. brave_web_search (make 2-3 strategic searches maximum to verify key claims)
+3. write_to_database (to record findings and advance the post)
 
-⚠️ IMPORTANT: Getting the current time is just the BEGINNING. You must continue with research and database write!
+⚠️ SEARCH STRATEGY: Use only 2-3 targeted searches focusing on the most important claims. Do not search every single claim separately - prioritize and combine related claims in single searches.
+
+⚠️ CRITICAL: Make ALL tool calls together in one response. Do NOT make just one tool call and stop!
 
 Your complete workflow:
 1. 🕐 get_current_time - Get current date/time for context
@@ -86,7 +89,7 @@ After researching all claims, you MUST call write_to_database with:
             {"role": "system", "content": self.get_system_prompt()},
             {
                 "role": "user", 
-                "content": f"🔍 RESEARCH TASK: Complete ALL three steps for this Reddit post:\n\n**ORIGINAL POST:**\nPost ID: {post_id}\nTitle: \"{title}\"\nContent: {body}\nPriority: {priority}/10\n\n**TRIAGE ANALYSIS:**\n{reasoning}\n\n**CLAIMS TO RESEARCH:**\n{json.dumps(claims, indent=2)}\n\n🚨 COMPLETE WORKFLOW REQUIRED:\n\nSTEP 1: Call get_current_time to establish current date/time context\nSTEP 2: Research EACH claim using brave_web_search:\n   - Use multiple search queries per claim\n   - Find credible sources (government data, research papers, expert sources)\n   - Look for both supporting and contradicting evidence\n   - Check source dates and credibility\nSTEP 3: Call write_to_database with EXACT parameters:\n   - post_id: {post_id}\n   - stage: \"research\"\n   - content: {{your research findings, sources, fact_check_status, confidence}}\n   - next_stage: \"response\" (if complete) or \"rejected\" (if unverifiable)\n\n⚠️ CRITICAL: You must complete ALL THREE steps in this single response. Do not stop after just getting the time!\n\nStart now by calling get_current_time, then research each claim, then write results to database."
+                "content": f"🔍 RESEARCH TASK: Complete ALL three steps for this Reddit post:\n\n**ORIGINAL POST:**\nPost ID: {post_id}\nTitle: \"{title}\"\nContent: {body}\nPriority: {priority}/10\n\n**TRIAGE ANALYSIS:**\n{reasoning}\n\n**CLAIMS TO RESEARCH:**\n{json.dumps(claims, indent=2)}\n\n🚨 COMPLETE WORKFLOW REQUIRED:\n\nSTEP 1: Call get_current_time to establish current date/time context\nSTEP 2: Research claims using brave_web_search:\n   - Make 2-3 strategic searches maximum (combine related claims)\n   - Focus on most important/verifiable claims first\n   - Find credible sources (government data, research papers, expert sources)\n   - Look for both supporting and contradicting evidence\nSTEP 3: Call write_to_database with EXACT parameters:\n   - post_id: {post_id}\n   - stage: \"research\"\n   - content: {{your research findings, sources, fact_check_status, confidence}}\n   - next_stage: \"response\" (if complete) or \"rejected\" (if unverifiable)\n\n⚠️ CRITICAL: You must make ALL THREE TOOL CALLS in this single response:\n1. get_current_time\n2. brave_web_search (2-3 strategic searches maximum - prioritize most important claims)\n3. write_to_database (with proper analysis of search results)\n\n🔍 SEARCH STRATEGY: Make only 2-3 targeted searches. Combine related claims in single searches. Focus on the most verifiable and important claims.\n\nDo not stop after just calling get_current_time! Make ALL tool calls together in one response."
             }
         ]
     

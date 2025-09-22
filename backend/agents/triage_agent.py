@@ -120,7 +120,7 @@ CRITICAL: The JSON must be syntactically correct and contain ALL required fields
 ```
 
 STRICT JSON REQUIREMENTS:
-- decision: MUST be exactly "RESEARCH_NEEDED" or "REJECTED" (no other values)
+- decision: MUST be exactly "RESEARCH_NEEDED" or "REJECTED" (no other values like INSUFFICIENT_INFORMATION, NO_RESEARCH, etc.)
 - priority: MUST be an integer from 1 to 10
 - claims: MUST be an array of strings (even if empty: [])
 - reasoning: MUST be a string explaining your decision
@@ -306,12 +306,23 @@ Note:
             if "claims_list" in result and "claims" not in result:
                 result["claims"] = result.pop("claims_list")
 
-            # Validate required fields
+            # Handle missing decision field - infer from other fields
             if "decision" not in result:
-                return {"success": False, "error": "Missing 'decision' field in JSON"}
+                # If the response has claims but no decision, assume research needed
+                if result.get("claims") and len(result.get("claims", [])) > 0:
+                    result["decision"] = "RESEARCH_NEEDED"
+                else:
+                    result["decision"] = "REJECTED"
+
+            # Normalize decision values from different models
+            decision = result["decision"]
+            if decision in ["NO_RESEARCH_NEEDED", "NO_RESEARCH", "REJECT", "SKIP", "NO_RESEARCH", "INSUFFICIENT_INFORMATION"]:
+                result["decision"] = "REJECTED"
+            elif decision in ["RESEARCH", "NEEDS_RESEARCH", "RESEARCH_REQUIRED"]:
+                result["decision"] = "RESEARCH_NEEDED"
 
             if result["decision"] not in ["RESEARCH_NEEDED", "REJECTED"]:
-                return {"success": False, "error": "Invalid decision value, must be RESEARCH_NEEDED or REJECTED"}
+                return {"success": False, "error": f"Invalid decision value '{decision}', must be RESEARCH_NEEDED or REJECTED"}
 
             # Set defaults for optional fields
             result.setdefault("priority", 5)

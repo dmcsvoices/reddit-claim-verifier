@@ -459,7 +459,10 @@ class BaseAgent(ABC):
                 }
             }
             result = await self.execute_tool_call(standard_tool_call)
-            tool_results.append(result)
+            tool_results.append({
+                "tool": function_name,
+                "result": result
+            })
             tools_used.append(function_name)
 
             if isinstance(result, dict) and "error" in result:
@@ -492,7 +495,7 @@ class BaseAgent(ABC):
 
         # Triage agent has its own process method that handles JSON parsing directly
         # No follow-up call needed - let it handle the response parsing itself
-        if False:  # Disabled follow-up call for now
+        if True:  # Re-enabled follow-up call for proper tool result handling
             print(f"   🔄 Making follow-up call to get final {self.agent_stage} response...")
 
             # Prepare messages with tool results
@@ -547,6 +550,12 @@ class BaseAgent(ABC):
                     )
                     print(f"   🎯 Using JSON schema enforcement for triage response")
                 else:
+                    # Add explicit instruction for final response
+                    follow_up_messages.append({
+                        "role": "user",
+                        "content": "Now provide your final analysis and conclusions based on the tool results above. Do not call any more tools - just provide your written response."
+                    })
+
                     follow_up_response = client.chat.completions.create(
                         model=self.model,
                         messages=follow_up_messages,
@@ -556,6 +565,47 @@ class BaseAgent(ABC):
 
                 final_content = follow_up_response.choices[0].message.content
                 print(f"   ✅ Follow-up response received: {repr(final_content[:200])}")
+
+                # Check if database write tool was called
+                database_writes = [t for t in tools_used if 'write_to_database' in t or 'database' in t]
+                if not database_writes and self.agent_stage == "research" and hasattr(self, '_current_post_id'):
+                    print(f"   🔧 FOLLOW-UP FALLBACK: Auto-calling write_to_database for research agent")
+
+                    # Analyze what happened with the searches
+                    search_failures = [result for result in tool_results if isinstance(result, dict) and "error" in result]
+                    search_successes = [result for result in tool_results if isinstance(result, dict) and "success" in result and result["success"]]
+
+                    # Create fallback database write
+                    fallback_tool_call = {
+                        "function": {
+                            "name": "write_to_database",
+                            "arguments": {
+                                "post_id": self._current_post_id,
+                                "stage": "research",
+                                "content": {
+                                    "result": f"Research analysis completed: {final_content[:500]}",
+                                    "search_failures": len(search_failures),
+                                    "search_successes": len(search_successes),
+                                    "search_errors": [f"Search failed: {result.get('error', 'Unknown error')}" for result in search_failures],
+                                    "fact_check_status": "limited_research" if search_failures else "research_completed",
+                                    "confidence": 0.3 if search_failures else 0.7,
+                                    "note": "Fallback database write after follow-up response"
+                                },
+                                "next_stage": "response"
+                            }
+                        }
+                    }
+
+                    try:
+                        fallback_result = await self.execute_tool_call(fallback_tool_call)
+                        tool_results.append({
+                            "tool": "write_to_database",
+                            "result": fallback_result
+                        })
+                        tools_used.append("write_to_database")
+                        print(f"   ✅ FOLLOW-UP FALLBACK SUCCESSFUL: Database write executed")
+                    except Exception as e:
+                        print(f"   ❌ FOLLOW-UP FALLBACK FAILED: {e}")
 
                 return {
                     "success": True,
@@ -627,7 +677,10 @@ class BaseAgent(ABC):
 
                 try:
                     fallback_result = await self.execute_tool_call(fallback_tool_call)
-                    tool_results.append(fallback_result)
+                    tool_results.append({
+                        "tool": "write_to_database",
+                        "result": fallback_result
+                    })
                     tools_used.append("write_to_database")
                     print(f"   ✅ FALLBACK SUCCESSFUL: Database write executed")
                     print(f"   📝 Fallback result: {fallback_result}")
@@ -832,13 +885,17 @@ class BaseAgent(ABC):
             # Build messages for this processing stage
             messages = self.build_messages(post_data, context)
 
-            # Call Ollama with tools
+            # Call LLM with tools
             response = await self.call_llm(messages, self.tools)
 
-            # Handle response and tool calls
-            result = await self.handle_response(response)
-            
-            return result
+            # Check if response was already processed (Together AI with tool calls)
+            if "tool_calls" in response and response.get("success") is not None:
+                # Already processed by handle_together_tool_calls
+                return response
+            else:
+                # Need to handle response (Ollama/LM Studio)
+                result = await self.handle_response(response)
+                return result
             
         except Exception as e:
             return {
