@@ -1430,7 +1430,7 @@ async def get_completed_editorial_posts():
                 FROM posts p
                 WHERE (p.queue_stage = 'editorial' AND p.queue_status = 'completed')
                    OR (p.queue_stage = 'post_queue' AND p.queue_status = 'pending')
-                ORDER BY p.created_utc DESC
+                ORDER BY p.processed_at DESC
                 LIMIT 50
             """)
 

@@ -875,7 +875,10 @@ function App() {
         </button>
         <button
           style={synthwaveStyles.navButton(activeTab === 'post')}
-          onClick={() => setActiveTab('post')}
+          onClick={() => {
+            setActiveTab('post')
+            getCompletedPosts()
+          }}
           className="synthwave-button"
         >
           📝 Post
@@ -2031,14 +2034,10 @@ function App() {
                                   onChange={() => {
                                     console.log(`🟣 Selected Together API for ${stage}`)
                                     setEndpointTypes(prev => ({ ...prev, [stage]: 'together' }))
-                                    // Set default Together API model if none selected
-                                    if (!currentModels[stage]) {
-                                      setCurrentModels(prev => ({ ...prev, [stage]: 'openai/gpt-oss-120b' }))
-                                    }
                                   }}
                                   style={{ marginRight: '8px', accentColor: '#00ff88' }}
                                 />
-                                🟣 Together AI (openai/gpt-oss-120b)
+                                🟣 Together AI
                               </label>
 
                               <label style={{
@@ -2146,7 +2145,7 @@ function App() {
                               🟣 <strong>Together AI Endpoint Active</strong><br/>
                               <small style={{ color: '#8ecae6' }}>
                                 Enterprise-grade models with function calling support<br/>
-                                Model: openai/gpt-oss-120b
+                                Model: {currentModels[stage] || 'No model selected'}
                               </small>
                             </div>
                           )}
@@ -2210,7 +2209,7 @@ function App() {
                                   ✅ Together AI configured
                                   <br />
                                   <small style={{ color: '#666', fontSize: '0.7em' }}>
-                                    Model: {currentModels[stage] || 'openai/gpt-oss-120b'}
+                                    Model: {currentModels[stage] || 'No model selected'}
                                     <br />
                                     <span style={{ color: '#00ff88' }}>💾 Settings auto-saved</span>
                                   </small>
@@ -2491,6 +2490,7 @@ function App() {
                         fontSize: '0.85em',
                         color: '#8892b0'
                       }}>
+                        <span>#{post.id}</span>
                         <span>👤 {post.author}</span>
                         <span>🔗 {post.reddit_id}</span>
                         <span>📅 {new Date(post.created_utc).toLocaleDateString()}</span>
