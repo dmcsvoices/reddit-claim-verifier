@@ -1,0 +1,157 @@
+# Production Docker Compose for Reddit Monitor
+# Based on current feature/native-development branch state
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  db:
+    image: postgres:16
+    container_name: reddit-monitor-db-prod
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-redditmon}
+      POSTGRES_USER: ${DB_USER:-redditmon}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-supersecret}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --lc-collate=C --lc-ctype=C"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backups:/backups
+    networks:
+      - reddit-monitor-network
+    ports:
+      # Only expose for debugging - remove in production
+      - "${DB_PORT:-5443}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-redditmon} -d ${DB_NAME:-redditmon}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # FastAPI Backend
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.production
+    container_name: reddit-monitor-backend-prod
+    restart: unless-stopped
+    environment:
+      # Database connection
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_NAME=${DB_NAME:-redditmon}
+      - DB_USER=${DB_USER:-redditmon}
+      - DB_PASSWORD=${DB_PASSWORD:-supersecret}
+
+      # Reddit API
+      - REDDIT_CLIENT_ID=${REDDIT_CLIENT_ID}
+      - REDDIT_CLIENT_SECRET=${REDDIT_CLIENT_SECRET}
+      - REDDIT_USERNAME=${REDDIT_USERNAME}
+      - REDDIT_PASSWORD=${REDDIT_PASSWORD}
+      - REDDIT_USER_AGENT=${REDDIT_USER_AGENT:-reddit-monitor-prod/1.0}
+
+      # External APIs
+      - BRAVE_API_KEY=${BRAVE_API_KEY}
+      - TOGETHER_API_KEY=${TOGETHER_API_KEY}
+
+      # LLM Endpoints (Together AI by default)
+      - TRIAGE_ENDPOINT=${TRIAGE_ENDPOINT:-together-api}
+      - RESEARCH_ENDPOINT=${RESEARCH_ENDPOINT:-together-api}
+      - RESPONSE_ENDPOINT=${RESPONSE_ENDPOINT:-together-api}
+      - EDITORIAL_ENDPOINT=${EDITORIAL_ENDPOINT:-together-api}
+
+      # Production settings
+      - ENV=production
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - CORS_ORIGINS=${CORS_ORIGINS:-*}
+
+    depends_on:
+      db:
+        condition: service_healthy
+
+    networks:
+      - reddit-monitor-network
+
+    # Only expose for debugging - nginx handles routing in production
+    ports:
+      - "5151:5151"
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5151/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '2.0'
+        reservations:
+          memory: 1G
+          cpus: '1.0'
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # React Frontend with Nginx
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.production
+      args:
+        - NODE_ENV=production
+        - VITE_API_URL=${VITE_API_URL:-http://localhost:5151}
+    container_name: reddit-monitor-frontend-prod
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - reddit-monitor-network
+    volumes:
+      # Mount SSL certificates if available
+      - ./ssl:/etc/ssl/certs:ro
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "3"
+
+networks:
+  reddit-monitor-network:
+    driver: bridge
+    name: reddit-monitor-prod-network
+
+volumes:
+  postgres_data:
+    name: reddit-monitor-postgres-data
+    driver: local

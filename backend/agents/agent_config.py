@@ -15,36 +15,40 @@ from .editorial_agent import EditorialAgent
 AGENT_CONFIG = {
     "triage": {
         "class": TriageAgent,
-        "model": "deepseek-r1:1.5b",
-        "endpoint": os.getenv("TRIAGE_ENDPOINT", "http://192.168.1.71:11434"),
-        "timeout": 120,  # 2 minutes for model loading + processing
+        "model": "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo",
+        "endpoint": os.getenv("TRIAGE_ENDPOINT", "together-api"),
+        "endpoint_type": "together",
+        "timeout": 60,  # Together AI is much faster than local models
         "max_concurrent": 4,
         "description": "Identifies posts with factual claims worth fact-checking",
         "cost_per_token": 0.0001
     },
     "research": {
-        "class": ResearchAgent, 
-        "model": "gpt-oss:20b",
-        "endpoint": os.getenv("RESEARCH_ENDPOINT", "http://localhost:11434"),
-        "timeout": 600,  # 10 minutes for model loading + web research + tool calls
+        "class": ResearchAgent,
+        "model": "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
+        "endpoint": os.getenv("RESEARCH_ENDPOINT", "together-api"),
+        "endpoint_type": "together",
+        "timeout": 300,  # 5 minutes for web research + tool calls
         "max_concurrent": 2,
         "description": "Researches factual claims using web search",
         "cost_per_token": 0.001
     },
     "response": {
         "class": ResponseAgent,
-        "model": "gpt-oss:20b", 
-        "endpoint": os.getenv("RESPONSE_ENDPOINT", "http://localhost:11434"),
-        "timeout": 300,  # 5 minutes for model loading + response generation
+        "model": "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
+        "endpoint": os.getenv("RESPONSE_ENDPOINT", "together-api"),
+        "endpoint_type": "together",
+        "timeout": 180,  # 3 minutes for response generation
         "max_concurrent": 2,
         "description": "Generates fact-based responses to Reddit posts",
         "cost_per_token": 0.001
     },
     "editorial": {
         "class": EditorialAgent,
-        "model": "gpt-oss:20b",
-        "endpoint": os.getenv("EDITORIAL_ENDPOINT", "http://localhost:11434"), 
-        "timeout": 180,  # 3 minutes for model loading + editing
+        "model": "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo",
+        "endpoint": os.getenv("EDITORIAL_ENDPOINT", "together-api"),
+        "endpoint_type": "together",
+        "timeout": 120,  # 2 minutes for editing
         "max_concurrent": 3,
         "description": "Polishes and fact-checks response drafts",
         "cost_per_token": 0.0001

@@ -1,0 +1,41 @@
+# Production Dockerfile for Reddit Monitor Frontend
+FROM node:20-slim as builder
+
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+
+# Install all dependencies (including devDependencies for build)
+RUN npm ci
+
+# Copy source code
+COPY . .
+
+# Build for production
+RUN npm run build
+
+# Production stage with nginx
+FROM nginx:alpine as production
+
+# Copy built assets from builder stage
+COPY --from=builder /app/dist /usr/share/nginx/html
+
+# Copy custom nginx configuration
+COPY nginx.prod.conf /etc/nginx/conf.d/default.conf
+
+# Remove default nginx config
+RUN rm /etc/nginx/conf.d/default.conf.backup 2>/dev/null || true
+
+# Create health check endpoint
+RUN echo 'server { listen 8080; location /health { return 200 "healthy\\n"; add_header Content-Type text/plain; } }' > /etc/nginx/conf.d/health.conf
+
+# Expose ports
+EXPOSE 80 8080
+
+# Health check on dedicated port
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+  CMD curl -f http://localhost:8080/health || exit 1
+
+# Start nginx
+CMD ["nginx", "-g", "daemon off;"]
